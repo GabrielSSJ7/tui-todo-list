@@ -47,17 +47,31 @@ fn dispatch(command: Command, store: &mut SqliteStore) -> Result<()> {
 /// Handlers that produce a single text blob to print.
 fn run_text_command(command: Command, store: &mut dyn TaskStore) -> Result<()> {
     let output = match command {
-        Command::Add { title, priority } => {
-            commands::add(store, &title.join(" "), priority.into())?
+        Command::Add { title, priority, project } => {
+            commands::add(store, &title.join(" "), priority.into(), project.as_deref())?
         }
-        Command::List { all } => commands::list(store, all)?,
+        Command::List { all, project } => commands::list(store, all, project.as_deref())?,
         Command::Done { id } => commands::done(store, id)?,
+        Command::Move { id, project } => commands::move_task(store, id, &project)?,
+        Command::Project { action } => run_project_action(action, store)?,
+        Command::Priority { id, priority } => {
+            commands::set_priority(store, id, priority.into())?
+        }
         Command::Reopen { id } => commands::reopen(store, id)?,
         Command::Rm { id } => commands::remove(store, id)?,
         // TUI/Status/TmuxConfig are handled in dispatch and never reach here.
         Command::Tui | Command::Status | Command::TmuxConfig => unreachable!(),
     };
     print_line(output)
+}
+
+fn run_project_action(action: cli::ProjectAction, store: &mut dyn TaskStore) -> Result<String> {
+    use cli::ProjectAction;
+    match action {
+        ProjectAction::Add { name } => commands::add_project(store, &name.join(" ")),
+        ProjectAction::List => commands::list_projects(store),
+        ProjectAction::Rm { id } => commands::remove_project(store, id),
+    }
 }
 
 fn print_line(text: String) -> Result<()> {

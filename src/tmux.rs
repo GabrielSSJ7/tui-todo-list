@@ -2,7 +2,7 @@
 
 use crate::error::Result;
 use crate::model::Status;
-use crate::store::{StatusFilter, TaskStore};
+use crate::store::{StatusFilter, TaskQuery, TaskStore};
 
 /// One-line summary for the tmux status bar, e.g. `☐ 3  ⚑ deploy site`.
 /// Shows open count and the single highest-priority open task's title.
@@ -20,7 +20,7 @@ pub fn status_line(store: &dyn TaskStore) -> Result<String> {
 
 /// Title of the highest-priority, then newest, open task.
 fn top_open_title(store: &dyn TaskStore) -> Result<Option<String>> {
-    let open = store.list(StatusFilter::Only(Status::Open))?;
+    let open = store.list(TaskQuery::all().with_status(StatusFilter::Only(Status::Open)))?;
     // list() already orders high-priority first; take the head.
     Ok(open.into_iter().next().map(|t| t.title))
 }
@@ -62,8 +62,9 @@ mod tests {
     #[test]
     fn shows_count_and_top_title() {
         let mut s = FakeStore::new();
-        s.add(NewTask::new("ship it", Priority::High).unwrap()).unwrap();
-        s.add(NewTask::new("later", Priority::Low).unwrap()).unwrap();
+        let inbox = s.inbox().unwrap().id.unwrap();
+        s.add(NewTask::new("ship it", Priority::High, inbox).unwrap()).unwrap();
+        s.add(NewTask::new("later", Priority::Low, inbox).unwrap()).unwrap();
         let line = status_line(&s).unwrap();
         assert!(line.starts_with("☐ 2"), "line was {line}");
         assert!(line.contains("ship it"));

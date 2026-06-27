@@ -20,15 +20,39 @@ pub enum Command {
         /// Priority: low | medium | high.
         #[arg(short, long, value_enum, default_value_t = PriorityArg::Medium)]
         priority: PriorityArg,
+        /// Project to add it to (defaults to Inbox).
+        #[arg(short = 'P', long)]
+        project: Option<String>,
     },
     /// List tasks.
     List {
         /// Include completed tasks too.
         #[arg(short, long)]
         all: bool,
+        /// Only show tasks in this project.
+        #[arg(short = 'P', long)]
+        project: Option<String>,
     },
     /// Mark a task done by id.
     Done { id: i64 },
+    /// Move a task to another project.
+    Move {
+        id: i64,
+        /// Destination project name.
+        project: String,
+    },
+    /// Create, list, or delete projects.
+    Project {
+        #[command(subcommand)]
+        action: ProjectAction,
+    },
+    /// Change a task's priority.
+    #[command(visible_alias = "pri")]
+    Priority {
+        id: i64,
+        #[arg(value_enum)]
+        priority: PriorityArg,
+    },
     /// Reopen a completed task by id.
     Reopen { id: i64 },
     /// Delete a task by id.
@@ -39,6 +63,21 @@ pub enum Command {
     TmuxConfig,
     /// Launch the interactive TUI (default when no subcommand given).
     Tui,
+}
+
+/// Project management subcommands.
+#[derive(Subcommand)]
+pub enum ProjectAction {
+    /// Create a project.
+    Add {
+        /// Project name (one or more words).
+        name: Vec<String>,
+    },
+    /// List projects with open-task counts.
+    #[command(visible_alias = "ls")]
+    List,
+    /// Delete a project by id; its tasks return to Inbox.
+    Rm { id: i64 },
 }
 
 /// Clap-facing mirror of `Priority`. Keeps clap derive out of the domain type.

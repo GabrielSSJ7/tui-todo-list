@@ -78,13 +78,37 @@ impl FromStr for Priority {
     }
 }
 
-/// A single todo item. `id` is None until persisted.
+/// A project groups tasks. "Inbox" is the seeded default. `id` is None
+/// until persisted.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Project {
+    pub id: Option<i64>,
+    pub name: String,
+    pub created_at: DateTime<Utc>,
+}
+
+/// Name of the always-present default project that orphan/unassigned
+/// tasks belong to.
+pub const INBOX_NAME: &str = "Inbox";
+
+/// Validate a project name: trimmed, non-blank. Returns the cleaned name.
+pub fn clean_project_name(name: impl Into<String>) -> Result<String, String> {
+    let name = name.into().trim().to_string();
+    if name.is_empty() {
+        return Err("project name is empty, expected non-blank text".to_string());
+    }
+    Ok(name)
+}
+
+/// A single todo item. `id` is None until persisted. Every task belongs
+/// to exactly one project (Inbox by default).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Task {
     pub id: Option<i64>,
     pub title: String,
     pub status: Status,
     pub priority: Priority,
+    pub project_id: i64,
     pub created_at: DateTime<Utc>,
 }
 
@@ -94,16 +118,21 @@ pub struct Task {
 pub struct NewTask {
     pub title: String,
     pub priority: Priority,
+    pub project_id: i64,
 }
 
 impl NewTask {
     /// Reject blank titles early — the store should never see empty rows.
-    pub fn new(title: impl Into<String>, priority: Priority) -> Result<Self, String> {
+    pub fn new(
+        title: impl Into<String>,
+        priority: Priority,
+        project_id: i64,
+    ) -> Result<Self, String> {
         let title = title.into().trim().to_string();
         if title.is_empty() {
             return Err("task title is empty, expected non-blank text".to_string());
         }
-        Ok(NewTask { title, priority })
+        Ok(NewTask { title, priority, project_id })
     }
 }
 
@@ -131,7 +160,13 @@ mod tests {
 
     #[test]
     fn new_task_trims_and_rejects_blank() {
-        assert_eq!(NewTask::new("  hi  ", Priority::Low).unwrap().title, "hi");
-        assert!(NewTask::new("   ", Priority::Low).is_err());
+        assert_eq!(NewTask::new("  hi  ", Priority::Low, 1).unwrap().title, "hi");
+        assert!(NewTask::new("   ", Priority::Low, 1).is_err());
+    }
+
+    #[test]
+    fn clean_project_name_trims_and_rejects_blank() {
+        assert_eq!(clean_project_name("  Work ").unwrap(), "Work");
+        assert!(clean_project_name("  ").is_err());
     }
 }

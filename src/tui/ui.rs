@@ -1,30 +1,77 @@
 //! Pure rendering: reads `App` state, draws widgets. No state mutation.
 
-use ratatui::layout::{Constraint, Direction, Layout};
+use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, List, ListItem, ListState, Paragraph};
 use ratatui::Frame;
 
-use crate::model::{Priority, Status, Task};
-use crate::tui::app::{App, Mode};
+use crate::model::{Priority, Project, Status, Task};
+use crate::tui::app::{App, Focus, Mode};
 
-/// Top-level draw entry. Splits the screen into list + footer.
+/// Top-level draw entry: sidebar + task list on top, footer below.
 pub fn render(frame: &mut Frame, app: &App) {
-    let chunks = Layout::default()
+    let rows = Layout::default()
         .direction(Direction::Vertical)
         .constraints([Constraint::Min(1), Constraint::Length(3)])
         .split(frame.area());
 
-    render_list(frame, app, chunks[0]);
-    render_footer(frame, app, chunks[1]);
+    let cols = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Percentage(28), Constraint::Min(20)])
+        .split(rows[0]);
+
+    render_projects(frame, app, cols[0]);
+    render_tasks(frame, app, cols[1]);
+    render_footer(frame, app, rows[1]);
 }
 
-fn render_list(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
-    let items: Vec<ListItem> = app.tasks.iter().map(task_to_item).collect();
-    let title = format!(" todo · {} shown ", app.tasks.len());
+/// Border highlights the focused pane, like htop's active column.
+fn pane_border(focused: bool) -> Style {
+    if focused {
+        Style::default().fg(Color::Cyan)
+    } else {
+        Style::default().fg(Color::DarkGray)
+    }
+}
+
+fn render_projects(frame: &mut Frame, app: &App, area: Rect) {
+    let items: Vec<ListItem> = app.projects.iter().map(project_to_item).collect();
     let list = List::new(items)
-        .block(Block::default().borders(Borders::ALL).title(title))
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_style(pane_border(app.focus == Focus::Projects))
+                .title(" projects "),
+        )
+        .highlight_style(Style::default().add_modifier(Modifier::REVERSED))
+        .highlight_symbol("▶ ");
+
+    let mut state = ListState::default();
+    if !app.projects.is_empty() {
+        state.select(Some(app.selected_project));
+    }
+    frame.render_stateful_widget(list, area, &mut state);
+}
+
+fn project_to_item(project: &Project) -> ListItem<'_> {
+    ListItem::new(Line::from(project.name.clone()))
+}
+
+fn render_tasks(frame: &mut Frame, app: &App, area: Rect) {
+    let items: Vec<ListItem> = app.tasks.iter().map(task_to_item).collect();
+    let scope = app
+        .current_project()
+        .map(|p| p.name.as_str())
+        .unwrap_or("all");
+    let title = format!(" {scope} · {} shown ", app.tasks.len());
+    let list = List::new(items)
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_style(pane_border(app.focus == Focus::Tasks))
+                .title(title),
+        )
         .highlight_style(Style::default().add_modifier(Modifier::REVERSED))
         .highlight_symbol("▶ ");
 
@@ -64,13 +111,15 @@ fn priority_style(priority: Priority) -> Style {
     Style::default().fg(color)
 }
 
-/// Footer shows the input box while adding, otherwise the status hint.
-fn render_footer(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
+/// Footer shows the active input box, otherwise the status hint.
+fn render_footer(frame: &mut Frame, app: &App, area: Rect) {
     let (title, body) = match &app.mode {
-        Mode::Adding(buf) => (" new task (enter=save esc=cancel) ", format!("{buf}▏")),
+        Mode::AddingTask(buf) => (" new task (enter=save esc=cancel) ", format!("{buf}▏")),
+        Mode::AddingProject(buf) => {
+            (" new project (enter=save esc=cancel) ", format!("{buf}▏"))
+        }
         Mode::Normal => (" status ", app.status.clone()),
     };
-    let footer = Paragraph::new(body)
-        .block(Block::default().borders(Borders::ALL).title(title));
+    let footer = Paragraph::new(body).block(Block::default().borders(Borders::ALL).title(title));
     frame.render_widget(footer, area);
 }
