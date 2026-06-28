@@ -16,6 +16,13 @@ pub fn render(frame: &mut Frame, app: &App) {
         .constraints([Constraint::Min(1), Constraint::Length(3)])
         .split(frame.area());
 
+    // Compact mode drops the sidebar so the task list fills the small window.
+    if app.compact {
+        render_tasks(frame, app, rows[0]);
+        render_footer(frame, app, rows[1]);
+        return;
+    }
+
     let cols = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([Constraint::Percentage(28), Constraint::Min(20)])
@@ -60,11 +67,12 @@ fn project_to_item(project: &Project) -> ListItem<'_> {
 
 fn render_tasks(frame: &mut Frame, app: &App, area: Rect) {
     let items: Vec<ListItem> = app.tasks.iter().map(task_to_item).collect();
-    let scope = app
-        .current_project()
-        .map(|p| p.name.as_str())
-        .unwrap_or("all");
-    let title = format!(" {scope} · {} shown ", app.tasks.len());
+    let scope = if app.compact {
+        "to do"
+    } else {
+        app.current_project().map(|p| p.name.as_str()).unwrap_or("all")
+    };
+    let title = format!(" {scope} · {} ", app.tasks.len());
     let list = List::new(items)
         .block(
             Block::default()

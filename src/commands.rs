@@ -211,7 +211,7 @@ mod tests {
 
     #[test]
     fn list_projects_counts_open() {
-        let mut s = seeded(); // 1 open task in Inbox
+        let s = seeded(); // 1 open task in Inbox
         let out = list_projects(&s).unwrap();
         assert!(out.contains("@Inbox"));
         assert!(out.contains("1 open"));

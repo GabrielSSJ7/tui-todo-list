@@ -61,8 +61,15 @@ pub enum Command {
     Status,
     /// Print a tmux.conf snippet (popup keybind + status-bar line).
     TmuxConfig,
+    /// Print a Hyprland snippet (floating window + SUPER+Shift+T keybind).
+    HyprConfig,
     /// Launch the interactive TUI (default when no subcommand given).
-    Tui,
+    Tui {
+        /// Compact view: hide the project sidebar, show only open tasks.
+        /// Suited to a small floating window.
+        #[arg(short, long)]
+        compact: bool,
+    },
 }
 
 /// Project management subcommands.

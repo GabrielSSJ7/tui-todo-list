@@ -3,6 +3,7 @@
 mod cli;
 mod commands;
 mod error;
+mod hypr;
 mod model;
 mod paths;
 mod store;
@@ -31,15 +32,16 @@ fn run() -> Result<()> {
     let cli = Cli::parse();
     let mut store = SqliteStore::open(&paths::database_path()?)?;
     // No subcommand → launch the TUI, matching htop's bare-invocation feel.
-    let command = cli.command.unwrap_or(Command::Tui);
+    let command = cli.command.unwrap_or(Command::Tui { compact: false });
     dispatch(command, &mut store)
 }
 
 fn dispatch(command: Command, store: &mut SqliteStore) -> Result<()> {
     match command {
-        Command::Tui => tui::run(store),
+        Command::Tui { compact } => tui::run(store, compact),
         Command::Status => print_line(tmux::status_line(store)?),
         Command::TmuxConfig => print_line(tmux::config_snippet("todo")),
+        Command::HyprConfig => print_line(hypr::config_snippet("todo", "kitty")),
         other => run_text_command(other, store),
     }
 }
@@ -59,8 +61,10 @@ fn run_text_command(command: Command, store: &mut dyn TaskStore) -> Result<()> {
         }
         Command::Reopen { id } => commands::reopen(store, id)?,
         Command::Rm { id } => commands::remove(store, id)?,
-        // TUI/Status/TmuxConfig are handled in dispatch and never reach here.
-        Command::Tui | Command::Status | Command::TmuxConfig => unreachable!(),
+        // Interactive/printing commands are handled in dispatch.
+        Command::Tui { .. } | Command::Status | Command::TmuxConfig | Command::HyprConfig => {
+            unreachable!()
+        }
     };
     print_line(output)
 }

@@ -34,12 +34,20 @@ pub struct App<'a> {
     pub focus: Focus,
     pub mode: Mode,
     pub show_done: bool,
+    /// Compact view: no sidebar, open tasks across all projects. For the
+    /// small Hyprland floating window.
+    pub compact: bool,
     pub status: String,
     pub should_quit: bool,
 }
 
 impl<'a> App<'a> {
-    pub fn new(store: &'a mut dyn TaskStore) -> Result<Self> {
+    pub fn new(store: &'a mut dyn TaskStore, compact: bool) -> Result<Self> {
+        let status = if compact {
+            "space done · p pri · q quit".to_string()
+        } else {
+            "tab switch · a add · n project · space toggle · p pri · d del · q quit".to_string()
+        };
         let mut app = App {
             store,
             projects: Vec::new(),
@@ -48,9 +56,10 @@ impl<'a> App<'a> {
             selected: 0,
             focus: Focus::Tasks,
             mode: Mode::Normal,
-            show_done: true,
-            status: "tab switch · a add · n project · space toggle · p pri · d del · q quit"
-                .to_string(),
+            // Compact glances at open work only; full view shows everything.
+            show_done: !compact,
+            compact,
+            status,
             should_quit: false,
         };
         app.refresh()?;
@@ -82,9 +91,11 @@ impl<'a> App<'a> {
         } else {
             StatusFilter::Only(Status::Open)
         };
-        let project = match self.current_project_id() {
-            Some(id) => ProjectFilter::Only(id),
-            None => ProjectFilter::Any,
+        // Compact ignores the selected project and shows every project's work.
+        let project = match (self.compact, self.current_project_id()) {
+            (true, _) => ProjectFilter::Any,
+            (false, Some(id)) => ProjectFilter::Only(id),
+            (false, None) => ProjectFilter::Any,
         };
         self.tasks = self.store.list(TaskQuery { status, project })?;
         if self.selected >= self.tasks.len() {
@@ -131,6 +142,10 @@ impl<'a> App<'a> {
     }
 
     fn toggle_focus(&mut self) {
+        // No sidebar in compact mode — focus stays on tasks.
+        if self.compact {
+            return;
+        }
         self.focus = match self.focus {
             Focus::Projects => Focus::Tasks,
             Focus::Tasks => Focus::Projects,
@@ -313,14 +328,14 @@ mod tests {
     #[test]
     fn starts_with_inbox_selected() {
         let mut store = FakeStore::new();
-        let app = App::new(&mut store).unwrap();
+        let app = App::new(&mut store, false).unwrap();
         assert_eq!(app.current_project().unwrap().name, "Inbox");
     }
 
     #[test]
     fn add_flow_creates_task_in_current_project() {
         let mut store = FakeStore::new();
-        let mut app = App::new(&mut store).unwrap();
+        let mut app = App::new(&mut store, false).unwrap();
         add_task(&mut app, "hello");
         assert_eq!(app.tasks.len(), 1);
         assert_eq!(app.tasks[0].title, "hello");
@@ -329,7 +344,7 @@ mod tests {
     #[test]
     fn create_project_flow() {
         let mut store = FakeStore::new();
-        let mut app = App::new(&mut store).unwrap();
+        let mut app = App::new(&mut store, false).unwrap();
         app.on_key(key(KeyCode::Char('n'))).unwrap();
         type_str(&mut app, "Work");
         app.on_key(key(KeyCode::Enter)).unwrap();
@@ -339,7 +354,7 @@ mod tests {
     #[test]
     fn tab_switches_focus_and_project_nav_filters_tasks() {
         let mut store = FakeStore::new();
-        let mut app = App::new(&mut store).unwrap();
+        let mut app = App::new(&mut store, false).unwrap();
         // Inbox task.
         add_task(&mut app, "inbox task");
         // New project + a task there.
@@ -361,7 +376,7 @@ mod tests {
     #[test]
     fn space_toggles_status() {
         let mut store = FakeStore::new();
-        let mut app = App::new(&mut store).unwrap();
+        let mut app = App::new(&mut store, false).unwrap();
         add_task(&mut app, "task");
         app.on_key(key(KeyCode::Char(' '))).unwrap();
         assert_eq!(app.tasks[0].status, Status::Done);
@@ -370,7 +385,7 @@ mod tests {
     #[test]
     fn delete_removes_selected() {
         let mut store = FakeStore::new();
-        let mut app = App::new(&mut store).unwrap();
+        let mut app = App::new(&mut store, false).unwrap();
         add_task(&mut app, "doomed");
         app.on_key(key(KeyCode::Char('d'))).unwrap();
         assert!(app.tasks.is_empty());
@@ -379,7 +394,7 @@ mod tests {
     #[test]
     fn p_cycles_priority() {
         let mut store = FakeStore::new();
-        let mut app = App::new(&mut store).unwrap();
+        let mut app = App::new(&mut store, false).unwrap();
         add_task(&mut app, "task");
         app.on_key(key(KeyCode::Char('p'))).unwrap();
         assert_eq!(app.tasks[0].priority, Priority::High);
@@ -388,7 +403,7 @@ mod tests {
     #[test]
     fn action_keys_ignored_when_projects_focused() {
         let mut store = FakeStore::new();
-        let mut app = App::new(&mut store).unwrap();
+        let mut app = App::new(&mut store, false).unwrap();
         app.focus = Focus::Projects;
         // 'a' should not enter add-task mode while projects are focused.
         app.on_key(key(KeyCode::Char('a'))).unwrap();
@@ -398,8 +413,26 @@ mod tests {
     #[test]
     fn q_sets_quit() {
         let mut store = FakeStore::new();
-        let mut app = App::new(&mut store).unwrap();
+        let mut app = App::new(&mut store, false).unwrap();
         app.on_key(key(KeyCode::Char('q'))).unwrap();
         assert!(app.should_quit);
+    }
+
+    #[test]
+    fn compact_shows_open_tasks_across_projects_and_locks_focus() {
+        let mut store = FakeStore::new();
+        let work = store.add_project("Work").unwrap();
+        store
+            .add(NewTask::new("inbox open", Priority::Low, 1).unwrap())
+            .unwrap();
+        store
+            .add(NewTask::new("work open", Priority::High, work.id.unwrap()).unwrap())
+            .unwrap();
+        let mut app = App::new(&mut store, true).unwrap();
+        assert_eq!(app.tasks.len(), 2, "both projects' open tasks shown");
+        assert!(!app.show_done);
+        // Tab is a no-op in compact — focus stays on tasks.
+        app.on_key(key(KeyCode::Tab)).unwrap();
+        assert_eq!(app.focus, Focus::Tasks);
     }
 }

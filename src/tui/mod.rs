@@ -10,15 +10,19 @@ use crate::store::TaskStore;
 use app::App;
 
 /// Take over the terminal, run the event loop, and always restore on exit.
-pub fn run(store: &mut dyn TaskStore) -> Result<()> {
+pub fn run(store: &mut dyn TaskStore, compact: bool) -> Result<()> {
     let mut terminal = ratatui::init();
-    let result = event_loop(&mut terminal, store);
+    let result = event_loop(&mut terminal, store, compact);
     ratatui::restore();
     result
 }
 
-fn event_loop(terminal: &mut ratatui::DefaultTerminal, store: &mut dyn TaskStore) -> Result<()> {
-    let mut app = App::new(store)?;
+fn event_loop(
+    terminal: &mut ratatui::DefaultTerminal,
+    store: &mut dyn TaskStore,
+    compact: bool,
+) -> Result<()> {
+    let mut app = App::new(store, compact)?;
     while !app.should_quit {
         terminal.draw(|frame| ui::render(frame, &app))?;
         // Only key *press* events drive state; ignore release/repeat noise.

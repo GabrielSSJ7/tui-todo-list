@@ -63,6 +63,28 @@ todo tmux-config >> ~/.tmux.conf   # or source tmux/todo.conf
 Gives `prefix + T` to open the TUI in a popup, and an open-task count in
 the status bar.
 
+## Hyprland floating window
+
+A small floating window showing your open tasks, bound to a global key.
+
+```sh
+todo hypr-config                   # print a portable snippet (kitty)
+```
+
+`todo tui --compact` runs the TUI with no sidebar — just open tasks across
+all projects — sized for a small window.
+
+On **Omarchy**, source `hypr/todo.conf` (or the file installed at
+`~/.config/hypr/todo.conf`) which floats/centers the window and binds
+`SUPER+Shift+D`:
+
+```ini
+windowrule = float on,    match:class ^(org\.omarchy\.todo)$
+windowrule = center on,   match:class ^(org\.omarchy\.todo)$
+windowrule = size 600 460, match:class ^(org\.omarchy\.todo)$
+bindd = SUPER SHIFT, D, Todo, exec, omarchy-launch-tui ~/.cargo/bin/todo tui --compact
+```
+
 ## Storage
 
 SQLite at the XDG data dir (`~/.local/share/todo/tasks.db` on Linux).
