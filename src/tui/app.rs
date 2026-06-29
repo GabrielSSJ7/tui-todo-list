@@ -14,6 +14,13 @@ pub enum Focus {
     Tasks,
 }
 
+/// One line in the grouped overview: a project header or a task under it.
+#[derive(Debug, Clone)]
+pub enum OverviewRow {
+    Header { name: String, count: usize },
+    Task(Task),
+}
+
 /// What the UI is currently doing.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Mode {
@@ -67,6 +74,10 @@ pub struct App<'a> {
     /// Compact view: no sidebar, open tasks across all projects. For the
     /// small Hyprland floating window.
     pub compact: bool,
+    /// Overview: a single grouped list of every project and its tasks.
+    pub show_overview: bool,
+    pub overview_rows: Vec<OverviewRow>,
+    pub overview_selected: usize,
     pub status: String,
     pub should_quit: bool,
 }
@@ -74,9 +85,9 @@ pub struct App<'a> {
 impl<'a> App<'a> {
     pub fn new(store: &'a mut dyn TaskStore, compact: bool) -> Result<Self> {
         let status = if compact {
-            "space done · p pri · u undo · q quit".to_string()
+            "space done · p pri · u undo · o overview · q quit".to_string()
         } else {
-            "tab switch · a add · n project · space toggle · p pri · d del · u undo · q quit"
+            "tab · a add · n proj · space done · p pri · d del · u undo · o overview · q quit"
                 .to_string()
         };
         let mut app = App {
@@ -91,6 +102,9 @@ impl<'a> App<'a> {
             // Compact glances at open work only; full view shows everything.
             show_done: !compact,
             compact,
+            show_overview: false,
+            overview_rows: Vec::new(),
+            overview_selected: 0,
             status,
             should_quit: false,
         };
@@ -121,7 +135,32 @@ impl<'a> App<'a> {
         if self.selected_project >= self.projects.len() {
             self.selected_project = self.projects.len().saturating_sub(1);
         }
-        self.reload_tasks()
+        self.reload_tasks()?;
+        self.build_overview()
+    }
+
+    /// Rebuild the grouped overview: each project header followed by its
+    /// tasks (honoring show_done). Kept in sync on every refresh.
+    fn build_overview(&mut self) -> Result<()> {
+        let status = if self.show_done {
+            StatusFilter::All
+        } else {
+            StatusFilter::Only(Status::Open)
+        };
+        let mut rows = Vec::new();
+        for project in &self.projects {
+            let id = project.id.expect("listed project has id");
+            let tasks = self
+                .store
+                .list(TaskQuery::all().with_status(status).in_project(id))?;
+            rows.push(OverviewRow::Header { name: project.name.clone(), count: tasks.len() });
+            rows.extend(tasks.into_iter().map(OverviewRow::Task));
+        }
+        self.overview_rows = rows;
+        if self.overview_selected >= self.overview_rows.len() {
+            self.overview_selected = self.overview_rows.len().saturating_sub(1);
+        }
+        Ok(())
     }
 
     /// Reload only the task list for the selected project.
@@ -154,8 +193,13 @@ impl<'a> App<'a> {
     }
 
     fn on_normal_key(&mut self, key: KeyEvent) -> Result<()> {
+        // Overview is a read-only glance — only toggle, quit, and scroll.
+        if self.show_overview {
+            return self.on_overview_key(key);
+        }
         match key.code {
             KeyCode::Char('q') | KeyCode::Esc => self.should_quit = true,
+            KeyCode::Char('o') => self.toggle_overview()?,
             KeyCode::Tab | KeyCode::BackTab => self.toggle_focus(),
             KeyCode::Char('n') => self.mode = Mode::AddingProject(String::new()),
             KeyCode::Char('u') => self.undo()?,
@@ -163,6 +207,33 @@ impl<'a> App<'a> {
             KeyCode::Char('j') | KeyCode::Down => self.move_down()?,
             KeyCode::Char('k') | KeyCode::Up => self.move_up()?,
             _ => self.on_action_key(key)?,
+        }
+        Ok(())
+    }
+
+    fn on_overview_key(&mut self, key: KeyEvent) -> Result<()> {
+        match key.code {
+            KeyCode::Char('q') => self.should_quit = true,
+            KeyCode::Char('o') | KeyCode::Esc => self.toggle_overview()?,
+            KeyCode::Char('j') | KeyCode::Down => {
+                self.overview_selected =
+                    clamp_index(self.overview_selected, 1, self.overview_rows.len());
+            }
+            KeyCode::Char('k') | KeyCode::Up => {
+                self.overview_selected =
+                    clamp_index(self.overview_selected, -1, self.overview_rows.len());
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
+    fn toggle_overview(&mut self) -> Result<()> {
+        self.show_overview = !self.show_overview;
+        self.overview_selected = 0;
+        // Rebuild from current store state when opening.
+        if self.show_overview {
+            self.build_overview()?;
         }
         Ok(())
     }
@@ -560,6 +631,44 @@ mod tests {
         let mut app = App::new(&mut store, false).unwrap();
         app.on_key(key(KeyCode::Char('u'))).unwrap();
         assert_eq!(app.status, "nothing to undo");
+    }
+
+    #[test]
+    fn o_toggles_overview_and_builds_grouped_rows() {
+        let mut store = FakeStore::new();
+        store.add_project("Work").unwrap();
+        let mut app = App::new(&mut store, false).unwrap();
+        add_task(&mut app, "inbox task"); // goes to Inbox (selected)
+        app.on_key(key(KeyCode::Char('o'))).unwrap();
+        assert!(app.show_overview);
+        // Expect a header for each project plus the one task row.
+        let headers = app
+            .overview_rows
+            .iter()
+            .filter(|r| matches!(r, OverviewRow::Header { .. }))
+            .count();
+        assert_eq!(headers, 2, "Inbox + Work headers");
+        let tasks = app
+            .overview_rows
+            .iter()
+            .filter(|r| matches!(r, OverviewRow::Task(_)))
+            .count();
+        assert_eq!(tasks, 1);
+        // Toggle off.
+        app.on_key(key(KeyCode::Char('o'))).unwrap();
+        assert!(!app.show_overview);
+    }
+
+    #[test]
+    fn overview_is_read_only_no_delete() {
+        let mut store = FakeStore::new();
+        let mut app = App::new(&mut store, false).unwrap();
+        add_task(&mut app, "safe");
+        app.on_key(key(KeyCode::Char('o'))).unwrap();
+        // 'd' must not delete while in overview.
+        app.on_key(key(KeyCode::Char('d'))).unwrap();
+        app.on_key(key(KeyCode::Char('o'))).unwrap(); // back to normal
+        assert_eq!(app.tasks.len(), 1, "task survived overview");
     }
 
     #[test]

@@ -7,7 +7,7 @@ use ratatui::widgets::{Block, Borders, List, ListItem, ListState, Paragraph};
 use ratatui::Frame;
 
 use crate::model::{Priority, Project, Status, Task};
-use crate::tui::app::{App, Focus, Mode};
+use crate::tui::app::{App, Focus, Mode, OverviewRow};
 
 /// Top-level draw entry: sidebar + task list on top, footer below.
 pub fn render(frame: &mut Frame, app: &App) {
@@ -15,6 +15,13 @@ pub fn render(frame: &mut Frame, app: &App) {
         .direction(Direction::Vertical)
         .constraints([Constraint::Min(1), Constraint::Length(3)])
         .split(frame.area());
+
+    // Overview replaces the panes with one grouped, full-width list.
+    if app.show_overview {
+        render_overview(frame, app, rows[0]);
+        render_footer(frame, app, rows[1]);
+        return;
+    }
 
     // Compact mode drops the sidebar so the task list fills the small window.
     if app.compact {
@@ -100,6 +107,35 @@ fn render_tasks(frame: &mut Frame, app: &App, area: Rect) {
         state.select(Some(app.selected));
     }
     frame.render_stateful_widget(list, area, &mut state);
+}
+
+/// Render the grouped overview: project headers with their tasks beneath.
+fn render_overview(frame: &mut Frame, app: &App, area: Rect) {
+    let items: Vec<ListItem> = app.overview_rows.iter().map(overview_row_to_item).collect();
+    let list = List::new(items)
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(Color::Cyan))
+                .title(" overview · all projects "),
+        )
+        .highlight_style(Style::default().add_modifier(Modifier::REVERSED));
+
+    let mut state = ListState::default();
+    if !app.overview_rows.is_empty() {
+        state.select(Some(app.overview_selected));
+    }
+    frame.render_stateful_widget(list, area, &mut state);
+}
+
+fn overview_row_to_item(row: &OverviewRow) -> ListItem<'_> {
+    match row {
+        OverviewRow::Header { name, count } => ListItem::new(Line::from(Span::styled(
+            format!("@{name} ({count})"),
+            Style::default().fg(Color::Blue).add_modifier(Modifier::BOLD),
+        ))),
+        OverviewRow::Task(task) => task_to_item(task, None),
+    }
 }
 
 /// Render one task row with a checkbox and priority color. When `project`
