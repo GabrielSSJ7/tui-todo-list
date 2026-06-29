@@ -76,13 +76,13 @@ all projects — sized for a small window.
 
 On **Omarchy**, source `hypr/todo.conf` (or the file installed at
 `~/.config/hypr/todo.conf`) which floats/centers the window and binds
-`SUPER+Shift+D`:
+`SUPER+Alt+T`:
 
 ```ini
 windowrule = float on,    match:class ^(org\.omarchy\.todo)$
 windowrule = center on,   match:class ^(org\.omarchy\.todo)$
 windowrule = size 600 460, match:class ^(org\.omarchy\.todo)$
-bindd = SUPER SHIFT, D, Todo, exec, omarchy-launch-tui ~/.cargo/bin/todo tui --compact
+bindd = SUPER ALT, T, Todo, exec, omarchy-launch-tui ~/.cargo/bin/todo tui --compact
 ```
 
 ## Storage
