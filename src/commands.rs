@@ -3,6 +3,8 @@
 
 use std::collections::HashMap;
 
+use chrono::NaiveDate;
+
 use crate::error::{Result, TodoError};
 use crate::model::{clean_project_name, NewTask, Priority, Status, Task};
 use crate::store::{ProjectFilter, StatusFilter, TaskQuery, TaskStore};
@@ -26,17 +28,29 @@ fn resolve_project(store: &dyn TaskStore, name: Option<&str>) -> Result<i64> {
     }
 }
 
-/// Add a task to a project (Inbox if `project` is None).
+/// Add a task to a project (Inbox if `project` is None), optional deadline.
 pub fn add(
     store: &mut dyn TaskStore,
     title: &str,
     priority: Priority,
     project: Option<&str>,
+    due: Option<NaiveDate>,
 ) -> Result<String> {
     let project_id = resolve_project(store, project)?;
-    let new = NewTask::new(title, priority, project_id).map_err(TodoError::Invalid)?;
+    let new = NewTask::new(title, priority, project_id)
+        .map_err(TodoError::Invalid)?
+        .with_due(due);
     let task = store.add(new)?;
     Ok(format!("added #{} {}", task.id.unwrap_or_default(), task.title))
+}
+
+/// Set or clear a task's deadline. `due` of None clears it.
+pub fn set_due(store: &mut dyn TaskStore, id: i64, due: Option<NaiveDate>) -> Result<String> {
+    let task = store.set_due(id, due)?;
+    match task.due {
+        Some(d) => Ok(format!("#{id} due {d}")),
+        None => Ok(format!("#{id} deadline cleared")),
+    }
 }
 
 /// List tasks as aligned plain-text rows, optionally scoped to one project.
@@ -81,28 +95,38 @@ fn status_mark(status: Status) -> char {
     }
 }
 
-/// One list row: `#id [x] priority @Project title`.
+/// Trailing `(due YYYY-MM-DD)` suffix, or empty when there's no deadline.
+fn due_suffix(task: &Task) -> String {
+    match task.due {
+        Some(d) => format!(" (due {d})"),
+        None => String::new(),
+    }
+}
+
+/// One list row: `#id [x] priority @Project title (due ...)`.
 fn format_row(task: &Task, names: &HashMap<i64, String>) -> String {
     let unknown = "?".to_string();
     let project = names.get(&task.project_id).unwrap_or(&unknown);
     format!(
-        "#{:<4} [{}] {:<6} @{:<10} {}",
+        "#{:<4} [{}] {:<6} @{:<10} {}{}",
         task.id.unwrap_or_default(),
         status_mark(task.status),
         task.priority,
         project,
-        task.title
+        task.title,
+        due_suffix(task),
     )
 }
 
-/// One indented row under a project header: `  #id [x] priority title`.
+/// One indented row under a project header: `  #id [x] priority title (due ...)`.
 fn format_grouped_row(task: &Task) -> String {
     format!(
-        "  #{:<4} [{}] {:<6} {}",
+        "  #{:<4} [{}] {:<6} {}{}",
         task.id.unwrap_or_default(),
         status_mark(task.status),
         task.priority,
-        task.title
+        task.title,
+        due_suffix(task),
     )
 }
 
@@ -199,7 +223,7 @@ mod tests {
 
     fn seeded() -> FakeStore {
         let mut s = FakeStore::new();
-        add(&mut s, "buy milk", Priority::High, None).unwrap();
+        add(&mut s, "buy milk", Priority::High, None, None).unwrap();
         s
     }
 
@@ -207,7 +231,7 @@ mod tests {
     fn add_rejects_blank_title() {
         let mut s = FakeStore::new();
         assert!(matches!(
-            add(&mut s, "   ", Priority::Low, None),
+            add(&mut s, "   ", Priority::Low, None, None),
             Err(TodoError::Invalid(_))
         ));
     }
@@ -216,7 +240,7 @@ mod tests {
     fn add_to_unknown_project_errors() {
         let mut s = FakeStore::new();
         assert!(matches!(
-            add(&mut s, "task", Priority::Low, Some("Ghost")),
+            add(&mut s, "task", Priority::Low, Some("Ghost"), None),
             Err(TodoError::Invalid(_))
         ));
     }
@@ -225,7 +249,7 @@ mod tests {
     fn add_into_named_project() {
         let mut s = FakeStore::new();
         add_project(&mut s, "Work").unwrap();
-        add(&mut s, "ship it", Priority::High, Some("Work")).unwrap();
+        add(&mut s, "ship it", Priority::High, Some("Work"), None).unwrap();
         let work_only = list(&s, true, Some("Work")).unwrap();
         assert!(work_only.contains("ship it"));
         assert!(work_only.contains("@Work"));
@@ -260,17 +284,27 @@ mod tests {
     fn remove_project_moves_tasks_to_inbox() {
         let mut s = FakeStore::new();
         let work = s.add_project("Work").unwrap();
-        add(&mut s, "stay alive", Priority::Low, Some("Work")).unwrap();
+        add(&mut s, "stay alive", Priority::Low, Some("Work"), None).unwrap();
         remove_project(&mut s, work.id.unwrap()).unwrap();
         assert!(list(&s, true, None).unwrap().contains("stay alive"));
+    }
+
+    #[test]
+    fn add_with_due_shows_in_list_and_set_due_clears() {
+        let mut s = FakeStore::new();
+        let date = NaiveDate::from_ymd_opt(2026, 7, 1).unwrap();
+        add(&mut s, "ship", Priority::High, None, Some(date)).unwrap();
+        assert!(list(&s, false, None).unwrap().contains("(due 2026-07-01)"));
+        set_due(&mut s, 1, None).unwrap();
+        assert!(!list(&s, false, None).unwrap().contains("due"));
     }
 
     #[test]
     fn overview_groups_tasks_under_each_project() {
         let mut s = FakeStore::new();
         add_project(&mut s, "Work").unwrap();
-        add(&mut s, "inbox task", Priority::Low, None).unwrap();
-        add(&mut s, "work task", Priority::High, Some("Work")).unwrap();
+        add(&mut s, "inbox task", Priority::Low, None, None).unwrap();
+        add(&mut s, "work task", Priority::High, Some("Work"), None).unwrap();
         let out = overview(&s, false).unwrap();
         // Inbox header precedes its task; Work header precedes its task.
         let inbox_at = out.find("@Inbox").unwrap();

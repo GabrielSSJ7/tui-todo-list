@@ -1,6 +1,6 @@
 //! rusqlite-backed `TaskStore`. The only module that imports rusqlite.
 
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, NaiveDate, Utc};
 use rusqlite::types::Value;
 use rusqlite::{params_from_iter, Connection, OptionalExtension, Row};
 use std::path::Path;
@@ -54,13 +54,24 @@ impl SqliteStore {
                 status     TEXT    NOT NULL DEFAULT 'open',
                 priority   TEXT    NOT NULL DEFAULT 'medium',
                 project_id INTEGER NOT NULL DEFAULT 1 REFERENCES projects(id),
+                due_date   TEXT,
                 created_at TEXT    NOT NULL
             );",
         )
         .map_err(storage)?;
         self.seed_inbox()?;
         self.ensure_project_column()?;
+        self.ensure_column("tasks", "due_date", "ALTER TABLE tasks ADD COLUMN due_date TEXT;")?;
         Ok(())
+    }
+
+    /// Add a plain column to a table if missing. For nullable, no-default
+    /// columns that SQLite allows adding via ALTER on populated tables.
+    fn ensure_column(&self, table: &str, column: &str, alter_sql: &str) -> Result<()> {
+        if self.has_column(table, column)? {
+            return Ok(());
+        }
+        self.conn.execute_batch(alter_sql).map_err(storage)
     }
 
     /// Guarantee the default Inbox project exists. Idempotent.
@@ -132,12 +143,14 @@ fn row_to_task(row: &Row<'_>) -> rusqlite::Result<Task> {
     let status_tag: String = row.get("status")?;
     let priority_tag: String = row.get("priority")?;
     let created_raw: String = row.get("created_at")?;
+    let due_raw: Option<String> = row.get("due_date")?;
     Ok(Task {
         id: Some(row.get("id")?),
         title: row.get("title")?,
         status: Status::from_str(&status_tag).unwrap_or(Status::Open),
         priority: Priority::from_str(&priority_tag).unwrap_or(Priority::Medium),
         project_id: row.get("project_id")?,
+        due: due_raw.and_then(|s| NaiveDate::parse_from_str(&s, "%Y-%m-%d").ok()),
         created_at: parse_ts(&created_raw),
     })
 }
@@ -157,18 +170,27 @@ fn parse_ts(raw: &str) -> DateTime<Utc> {
         .unwrap_or_else(|_| Utc::now())
 }
 
+/// A deadline as a SQLite value: ISO date text, or NULL when absent.
+fn due_value(due: Option<NaiveDate>) -> Value {
+    match due {
+        Some(d) => Value::Text(d.format("%Y-%m-%d").to_string()),
+        None => Value::Null,
+    }
+}
+
 impl TaskStore for SqliteStore {
     fn add(&mut self, task: NewTask) -> Result<Task> {
         let created = Utc::now();
         self.conn
             .execute(
-                "INSERT INTO tasks (title, status, priority, project_id, created_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5)",
+                "INSERT INTO tasks (title, status, priority, project_id, due_date, created_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
                 rusqlite::params![
                     task.title,
                     Status::Open.as_tag(),
                     task.priority.as_tag(),
                     task.project_id,
+                    due_value(task.due),
                     created.to_rfc3339(),
                 ],
             )
@@ -179,6 +201,7 @@ impl TaskStore for SqliteStore {
             status: Status::Open,
             priority: task.priority,
             project_id: task.project_id,
+            due: task.due,
             created_at: created,
         })
     }
@@ -219,6 +242,10 @@ impl TaskStore for SqliteStore {
         self.update_task(id, "priority", Value::Text(priority.as_tag().to_string()))
     }
 
+    fn set_due(&mut self, id: i64, due: Option<NaiveDate>) -> Result<Task> {
+        self.update_task(id, "due_date", due_value(due))
+    }
+
     fn set_project(&mut self, id: i64, project_id: i64) -> Result<Task> {
         // Surface a clear error rather than a raw FK violation.
         self.get_project(project_id)?;
@@ -242,14 +269,15 @@ impl TaskStore for SqliteStore {
         })?;
         self.conn
             .execute(
-                "INSERT INTO tasks (id, title, status, priority, project_id, created_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                "INSERT INTO tasks (id, title, status, priority, project_id, due_date, created_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
                 rusqlite::params![
                     id,
                     task.title,
                     task.status.as_tag(),
                     task.priority.as_tag(),
                     task.project_id,
+                    due_value(task.due),
                     task.created_at.to_rfc3339(),
                 ],
             )
@@ -461,6 +489,19 @@ mod tests {
         assert_eq!(s.open_count().unwrap(), 0);
         let done = s.list(TaskQuery::all().with_status(StatusFilter::Only(Status::Done)));
         assert_eq!(done.unwrap().len(), 1);
+    }
+
+    #[test]
+    fn due_roundtrips_and_set_due_clears() {
+        let mut s = store();
+        let date = NaiveDate::from_ymd_opt(2026, 7, 1).unwrap();
+        let t = s
+            .add(new_task(&s, "ship", Priority::High).with_due(Some(date)))
+            .unwrap();
+        let id = t.id.unwrap();
+        assert_eq!(s.get(id).unwrap().due, Some(date));
+        s.set_due(id, None).unwrap();
+        assert_eq!(s.get(id).unwrap().due, None);
     }
 
     #[test]

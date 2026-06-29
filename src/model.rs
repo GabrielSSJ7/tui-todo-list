@@ -1,8 +1,14 @@
 //! Core domain types for tasks. No I/O, no third-party storage concerns.
 
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, NaiveDate, Utc};
 use std::fmt;
 use std::str::FromStr;
+
+/// Parse a `YYYY-MM-DD` deadline. Quotes the bad value on failure.
+pub fn parse_due(s: &str) -> Result<NaiveDate, String> {
+    NaiveDate::parse_from_str(s.trim(), "%Y-%m-%d")
+        .map_err(|_| format!("invalid date {s:?}, expected YYYY-MM-DD"))
+}
 
 /// Lifecycle state of a task.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -109,6 +115,7 @@ pub struct Task {
     pub status: Status,
     pub priority: Priority,
     pub project_id: i64,
+    pub due: Option<NaiveDate>,
     pub created_at: DateTime<Utc>,
 }
 
@@ -119,6 +126,7 @@ pub struct NewTask {
     pub title: String,
     pub priority: Priority,
     pub project_id: i64,
+    pub due: Option<NaiveDate>,
 }
 
 impl NewTask {
@@ -132,7 +140,13 @@ impl NewTask {
         if title.is_empty() {
             return Err("task title is empty, expected non-blank text".to_string());
         }
-        Ok(NewTask { title, priority, project_id })
+        Ok(NewTask { title, priority, project_id, due: None })
+    }
+
+    /// Attach an optional deadline. Builder keeps `new` callers unchanged.
+    pub fn with_due(mut self, due: Option<NaiveDate>) -> Self {
+        self.due = due;
+        self
     }
 }
 
@@ -168,5 +182,12 @@ mod tests {
     fn clean_project_name_trims_and_rejects_blank() {
         assert_eq!(clean_project_name("  Work ").unwrap(), "Work");
         assert!(clean_project_name("  ").is_err());
+    }
+
+    #[test]
+    fn parse_due_accepts_iso_and_rejects_garbage() {
+        assert_eq!(parse_due("2026-07-01").unwrap().to_string(), "2026-07-01");
+        let err = parse_due("07/01/2026").unwrap_err();
+        assert!(err.contains("07/01/2026"), "should quote bad value: {err}");
     }
 }

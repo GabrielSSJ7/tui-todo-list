@@ -6,6 +6,7 @@ pub mod sqlite;
 
 use crate::error::Result;
 use crate::model::{NewTask, Priority, Project, Status, Task};
+use chrono::NaiveDate;
 
 /// What the rest of the app needs from persistence. Kept small on purpose.
 pub trait TaskStore {
@@ -14,6 +15,8 @@ pub trait TaskStore {
     fn get(&self, id: i64) -> Result<Task>;
     fn set_status(&mut self, id: i64, status: Status) -> Result<Task>;
     fn set_priority(&mut self, id: i64, priority: Priority) -> Result<Task>;
+    /// Set or clear a task's deadline.
+    fn set_due(&mut self, id: i64, due: Option<NaiveDate>) -> Result<Task>;
     fn set_project(&mut self, id: i64, project_id: i64) -> Result<Task>;
     fn remove(&mut self, id: i64) -> Result<()>;
     /// Re-insert a previously removed task, preserving its id and fields.

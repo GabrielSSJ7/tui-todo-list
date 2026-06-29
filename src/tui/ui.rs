@@ -6,6 +6,8 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, List, ListItem, ListState, Paragraph};
 use ratatui::Frame;
 
+use chrono::Local;
+
 use crate::model::{Priority, Project, Status, Task};
 use crate::tui::app::{App, Focus, Mode, OverviewRow};
 
@@ -162,7 +164,21 @@ fn task_to_item<'a>(task: &'a Task, project: Option<&'a str>) -> ListItem<'a> {
         ));
     }
     spans.push(Span::styled(task.title.clone(), title_style));
+    if let Some(span) = due_span(task) {
+        spans.push(span);
+    }
     ListItem::new(Line::from(spans))
+}
+
+/// A `due M-D` span, red when overdue and still open. None if no deadline.
+fn due_span(task: &Task) -> Option<Span<'static>> {
+    let due = task.due?;
+    let overdue = task.status == Status::Open && due < Local::now().date_naive();
+    let color = if overdue { Color::Red } else { Color::DarkGray };
+    Some(Span::styled(
+        format!("  due {}", due.format("%m-%d")),
+        Style::default().fg(color),
+    ))
 }
 
 fn priority_style(priority: Priority) -> Style {

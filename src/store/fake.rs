@@ -1,7 +1,7 @@
 //! In-test fake store. Named type, not an inline stub (per test policy):
 //! commands/TUI tests drive this instead of touching SQLite.
 
-use chrono::Utc;
+use chrono::{NaiveDate, Utc};
 
 use crate::error::{Result, TodoError};
 use crate::model::{NewTask, Priority, Project, Status, Task, INBOX_NAME};
@@ -52,6 +52,7 @@ impl TaskStore for FakeStore {
             status: Status::Open,
             priority: task.priority,
             project_id: task.project_id,
+            due: task.due,
             created_at: Utc::now(),
         };
         self.next_task_id += 1;
@@ -89,6 +90,12 @@ impl TaskStore for FakeStore {
     fn set_priority(&mut self, id: i64, priority: Priority) -> Result<Task> {
         let i = self.task_index(id)?;
         self.tasks[i].priority = priority;
+        Ok(self.tasks[i].clone())
+    }
+
+    fn set_due(&mut self, id: i64, due: Option<NaiveDate>) -> Result<Task> {
+        let i = self.task_index(id)?;
+        self.tasks[i].due = due;
         Ok(self.tasks[i].clone())
     }
 

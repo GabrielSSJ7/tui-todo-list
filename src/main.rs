@@ -49,12 +49,17 @@ fn dispatch(command: Command, store: &mut SqliteStore) -> Result<()> {
 /// Handlers that produce a single text blob to print.
 fn run_text_command(command: Command, store: &mut dyn TaskStore) -> Result<()> {
     let output = match command {
-        Command::Add { title, priority, project } => {
-            commands::add(store, &title.join(" "), priority.into(), project.as_deref())?
+        Command::Add { title, priority, project, due } => {
+            let due = parse_due_arg(due)?;
+            commands::add(store, &title.join(" "), priority.into(), project.as_deref(), due)?
         }
         Command::List { all, project } => commands::list(store, all, project.as_deref())?,
         Command::Overview { all } => commands::overview(store, all)?,
         Command::Done { id } => commands::done(store, id)?,
+        Command::Due { id, date, clear } => {
+            let due = if clear { None } else { parse_due_arg(date)? };
+            commands::set_due(store, id, due)?
+        }
         Command::Move { id, project } => commands::move_task(store, id, &project)?,
         Command::Project { action } => run_project_action(action, store)?,
         Command::Priority { id, priority } => {
@@ -76,6 +81,15 @@ fn run_project_action(action: cli::ProjectAction, store: &mut dyn TaskStore) -> 
         ProjectAction::Add { name } => commands::add_project(store, &name.join(" ")),
         ProjectAction::List => commands::list_projects(store),
         ProjectAction::Rm { id } => commands::remove_project(store, id),
+    }
+}
+
+/// Parse an optional `YYYY-MM-DD` CLI argument into a date, surfacing a
+/// clear error for bad input.
+fn parse_due_arg(arg: Option<String>) -> Result<Option<chrono::NaiveDate>> {
+    match arg {
+        None => Ok(None),
+        Some(s) => model::parse_due(&s).map(Some).map_err(error::TodoError::Invalid),
     }
 }
 

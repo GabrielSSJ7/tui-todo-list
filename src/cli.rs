@@ -23,6 +23,9 @@ pub enum Command {
         /// Project to add it to (defaults to Inbox).
         #[arg(short = 'P', long)]
         project: Option<String>,
+        /// Deadline as YYYY-MM-DD.
+        #[arg(short, long)]
+        due: Option<String>,
     },
     /// List tasks.
     List {
@@ -59,6 +62,15 @@ pub enum Command {
         id: i64,
         #[arg(value_enum)]
         priority: PriorityArg,
+    },
+    /// Set a task's deadline (YYYY-MM-DD), or `--clear` to remove it.
+    Due {
+        id: i64,
+        /// Deadline as YYYY-MM-DD (omit with --clear to remove).
+        date: Option<String>,
+        /// Clear the deadline instead of setting one.
+        #[arg(long, conflicts_with = "date")]
+        clear: bool,
     },
     /// Reopen a completed task by id.
     Reopen { id: i64 },

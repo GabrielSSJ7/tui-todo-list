@@ -15,11 +15,14 @@ cargo build --release
 ```sh
 todo add deploy the site -p high   # add (priority: low|medium|high)
 todo add ship it -P Work           # add into a project (-P/--project)
+todo add file taxes --due 2026-07-15  # add with a deadline (-d/--due)
 todo list                          # open tasks only
 todo list --all                    # include completed
 todo list -P Work                  # only tasks in a project
+todo overview                      # all projects, tasks grouped (alias: tree)
 todo done 1                        # mark done
 todo priority 1 high               # change priority (alias: pri)
+todo due 1 2026-08-01              # set deadline (todo due 1 --clear to remove)
 todo move 1 Work                   # move task to another project
 todo reopen 1                      # reopen
 todo rm 1                          # delete
@@ -50,10 +53,14 @@ Left pane = projects, right pane = tasks of the selected project.
 | `a`        | add task (to selected project) |
 | `space`/`enter` | toggle done               |
 | `p`        | cycle priority                 |
+| `s`        | toggle sort (priority/project) |
+| `o`        | toggle grouped overview        |
 | `d`        | delete selected task           |
 | `u`        | undo last action               |
 | `h`        | hide/show completed            |
 | `q`/`esc`  | quit                           |
+
+Tasks with a deadline show `due M-D` (red when overdue).
 
 ## tmux
 

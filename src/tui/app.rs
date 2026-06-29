@@ -14,6 +14,14 @@ pub enum Focus {
     Tasks,
 }
 
+/// Ordering of the task list. Default is by priority (the store's order);
+/// `Project` groups tasks of the same project together.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SortMode {
+    Priority,
+    Project,
+}
+
 /// One line in the grouped overview: a project header or a task under it.
 #[derive(Debug, Clone)]
 pub enum OverviewRow {
@@ -78,6 +86,7 @@ pub struct App<'a> {
     pub show_overview: bool,
     pub overview_rows: Vec<OverviewRow>,
     pub overview_selected: usize,
+    pub sort_mode: SortMode,
     pub status: String,
     pub should_quit: bool,
 }
@@ -87,7 +96,7 @@ impl<'a> App<'a> {
         let status = if compact {
             "space done · p pri · u undo · o overview · q quit".to_string()
         } else {
-            "tab · a add · n proj · space done · p pri · d del · u undo · o overview · q quit"
+            "tab · a add · n proj · space done · p pri · s sort · d del · u undo · o overview · q quit"
                 .to_string()
         };
         let mut app = App {
@@ -105,6 +114,7 @@ impl<'a> App<'a> {
             show_overview: false,
             overview_rows: Vec::new(),
             overview_selected: 0,
+            sort_mode: SortMode::Priority,
             status,
             should_quit: false,
         };
@@ -177,10 +187,42 @@ impl<'a> App<'a> {
             (false, None) => ProjectFilter::Any,
         };
         self.tasks = self.store.list(TaskQuery { status, project })?;
+        self.apply_sort();
         if self.selected >= self.tasks.len() {
             self.selected = self.tasks.len().saturating_sub(1);
         }
         Ok(())
+    }
+
+    /// Reorder the loaded tasks per the active sort mode. Priority order is
+    /// the store default (already applied); Project groups by project rank
+    /// while preserving priority order within each group (stable sort).
+    fn apply_sort(&mut self) {
+        if self.sort_mode != SortMode::Project {
+            return;
+        }
+        // Precompute project ranks so the sort closure doesn't borrow self.
+        let rank: std::collections::HashMap<i64, usize> = self
+            .projects
+            .iter()
+            .enumerate()
+            .filter_map(|(i, p)| p.id.map(|id| (id, i)))
+            .collect();
+        self.tasks
+            .sort_by_key(|t| *rank.get(&t.project_id).unwrap_or(&usize::MAX));
+    }
+
+    fn toggle_sort(&mut self) -> Result<()> {
+        self.sort_mode = match self.sort_mode {
+            SortMode::Priority => SortMode::Project,
+            SortMode::Project => SortMode::Priority,
+        };
+        let label = match self.sort_mode {
+            SortMode::Priority => "priority",
+            SortMode::Project => "project",
+        };
+        self.status = format!("sort: {label}");
+        self.reload_tasks()
     }
 
     /// Route a key to the active mode's handler.
@@ -200,6 +242,7 @@ impl<'a> App<'a> {
         match key.code {
             KeyCode::Char('q') | KeyCode::Esc => self.should_quit = true,
             KeyCode::Char('o') => self.toggle_overview()?,
+            KeyCode::Char('s') => self.toggle_sort()?,
             KeyCode::Tab | KeyCode::BackTab => self.toggle_focus(),
             KeyCode::Char('n') => self.mode = Mode::AddingProject(String::new()),
             KeyCode::Char('u') => self.undo()?,
@@ -631,6 +674,26 @@ mod tests {
         let mut app = App::new(&mut store, false).unwrap();
         app.on_key(key(KeyCode::Char('u'))).unwrap();
         assert_eq!(app.status, "nothing to undo");
+    }
+
+    #[test]
+    fn s_sorts_tasks_by_project() {
+        let mut store = FakeStore::new();
+        let work = store.add_project("Work").unwrap();
+        // Two Inbox tasks and one Work task, interleaved priorities.
+        store.add(NewTask::new("inbox a", Priority::High, 1).unwrap()).unwrap();
+        store
+            .add(NewTask::new("work a", Priority::High, work.id.unwrap()).unwrap())
+            .unwrap();
+        store.add(NewTask::new("inbox b", Priority::High, 1).unwrap()).unwrap();
+        // Compact spans all projects so sort is observable.
+        let mut app = App::new(&mut store, true).unwrap();
+        app.on_key(key(KeyCode::Char('s'))).unwrap(); // -> sort by project
+        assert_eq!(app.sort_mode, SortMode::Project);
+        // Inbox (rank 0) tasks come before Work (rank 1).
+        let projects: Vec<i64> = app.tasks.iter().map(|t| t.project_id).collect();
+        let first_work = projects.iter().position(|&p| p == work.id.unwrap()).unwrap();
+        assert!(projects[..first_work].iter().all(|&p| p == 1));
     }
 
     #[test]
