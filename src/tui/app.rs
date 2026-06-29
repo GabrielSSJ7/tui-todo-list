@@ -25,7 +25,7 @@ pub enum SortMode {
 /// One line in the grouped overview: a project header or a task under it.
 #[derive(Debug, Clone)]
 pub enum OverviewRow {
-    Header { name: String, count: usize },
+    Header { id: i64, name: String, count: usize },
     Task(Task),
 }
 
@@ -42,6 +42,8 @@ enum OverviewAct {
 pub enum Mode {
     /// Browsing.
     Normal,
+    /// Choosing which project a new task goes to (compact add flow).
+    PickingProject,
     /// Typing a new task title; holds the in-progress buffer.
     AddingTask(String),
     /// Typing a new project name.
@@ -95,6 +97,10 @@ pub struct App<'a> {
     pub overview_rows: Vec<OverviewRow>,
     pub overview_selected: usize,
     pub sort_mode: SortMode,
+    /// Cursor in the project picker (PickingProject mode).
+    pub pick_selected: usize,
+    /// Project a queued AddingTask should land in; overrides the default.
+    add_target: Option<i64>,
     pub status: String,
     pub should_quit: bool,
 }
@@ -102,7 +108,7 @@ pub struct App<'a> {
 impl<'a> App<'a> {
     pub fn new(store: &'a mut dyn TaskStore, compact: bool) -> Result<Self> {
         let status = if compact {
-            "space done · p pri · u undo · o overview · q quit".to_string()
+            "a add · space done · p pri · u undo · o overview · q quit".to_string()
         } else {
             "tab · a add · n proj · space done · p pri · s sort · d del · u undo · o overview · q quit"
                 .to_string()
@@ -123,6 +129,8 @@ impl<'a> App<'a> {
             overview_rows: Vec::new(),
             overview_selected: 0,
             sort_mode: SortMode::Priority,
+            pick_selected: 0,
+            add_target: None,
             status,
             should_quit: false,
         };
@@ -171,7 +179,11 @@ impl<'a> App<'a> {
             let tasks = self
                 .store
                 .list(TaskQuery::all().with_status(status).in_project(id))?;
-            rows.push(OverviewRow::Header { name: project.name.clone(), count: tasks.len() });
+            rows.push(OverviewRow::Header {
+                id,
+                name: project.name.clone(),
+                count: tasks.len(),
+            });
             rows.extend(tasks.into_iter().map(OverviewRow::Task));
         }
         self.overview_rows = rows;
@@ -237,6 +249,7 @@ impl<'a> App<'a> {
     pub fn on_key(&mut self, key: KeyEvent) -> Result<()> {
         match &self.mode {
             Mode::Normal => self.on_normal_key(key),
+            Mode::PickingProject => self.on_pick_key(key),
             Mode::AddingTask(_) => self.on_task_input(key),
             Mode::AddingProject(_) => self.on_project_input(key),
         }
@@ -251,6 +264,7 @@ impl<'a> App<'a> {
             KeyCode::Char('q') | KeyCode::Esc => self.should_quit = true,
             KeyCode::Char('o') => self.toggle_overview()?,
             KeyCode::Char('s') => self.toggle_sort()?,
+            KeyCode::Char('a') => self.begin_add(),
             KeyCode::Tab | KeyCode::BackTab => self.toggle_focus(),
             KeyCode::Char('n') => self.mode = Mode::AddingProject(String::new()),
             KeyCode::Char('u') => self.undo()?,
@@ -275,6 +289,7 @@ impl<'a> App<'a> {
                     clamp_index(self.overview_selected, -1, self.overview_rows.len());
             }
             KeyCode::Char(' ') | KeyCode::Enter => self.act_on_overview(OverviewAct::Toggle)?,
+            KeyCode::Char('a') => self.begin_overview_add(),
             KeyCode::Char('p') => self.act_on_overview(OverviewAct::Priority)?,
             KeyCode::Char('d') => self.act_on_overview(OverviewAct::Delete)?,
             KeyCode::Char('u') => self.undo_in_overview()?,
@@ -363,10 +378,57 @@ impl<'a> App<'a> {
             return Ok(());
         }
         match key.code {
-            KeyCode::Char('a') => self.mode = Mode::AddingTask(String::new()),
             KeyCode::Char(' ') | KeyCode::Enter => self.toggle_selected()?,
             KeyCode::Char('d') => self.delete_selected()?,
             KeyCode::Char('p') => self.cycle_priority()?,
+            _ => {}
+        }
+        Ok(())
+    }
+
+    /// Start adding a task from the normal view. Compact mode has no sidebar,
+    /// so it first asks which project; the full view uses the selected project.
+    fn begin_add(&mut self) {
+        if self.compact {
+            self.pick_selected = 0;
+            self.mode = Mode::PickingProject;
+        } else if self.focus == Focus::Tasks {
+            self.add_target = self.current_project_id();
+            self.mode = Mode::AddingTask(String::new());
+        }
+    }
+
+    /// Start adding a task from the overview: it lands in the project the
+    /// cursor is currently inside (the selected task's, or the header's).
+    fn begin_overview_add(&mut self) {
+        let Some(pid) = self.overview_cursor_project() else {
+            return;
+        };
+        self.add_target = Some(pid);
+        self.mode = Mode::AddingTask(String::new());
+    }
+
+    /// Project the overview cursor sits in: a task row's project, or a header.
+    fn overview_cursor_project(&self) -> Option<i64> {
+        match self.overview_rows.get(self.overview_selected)? {
+            OverviewRow::Task(task) => Some(task.project_id),
+            OverviewRow::Header { id, .. } => Some(*id),
+        }
+    }
+
+    fn on_pick_key(&mut self, key: KeyEvent) -> Result<()> {
+        match key.code {
+            KeyCode::Esc => self.mode = Mode::Normal,
+            KeyCode::Char('j') | KeyCode::Down => {
+                self.pick_selected = clamp_index(self.pick_selected, 1, self.projects.len());
+            }
+            KeyCode::Char('k') | KeyCode::Up => {
+                self.pick_selected = clamp_index(self.pick_selected, -1, self.projects.len());
+            }
+            KeyCode::Enter => {
+                self.add_target = self.projects.get(self.pick_selected).and_then(|p| p.id);
+                self.mode = Mode::AddingTask(String::new());
+            }
             _ => {}
         }
         Ok(())
@@ -524,9 +586,12 @@ impl<'a> App<'a> {
         let Mode::AddingTask(buf) = &self.mode else {
             return Ok(());
         };
-        let Some(project_id) = self.current_project_id() else {
+        // Target is whatever the add flow chose (picker/overview), else the
+        // selected project.
+        let Some(project_id) = self.add_target.or_else(|| self.current_project_id()) else {
             self.status = "no project selected".to_string();
             self.mode = Mode::Normal;
+            self.add_target = None;
             return Ok(());
         };
         // Blank input just cancels — no error popup needed mid-flow.
@@ -535,12 +600,14 @@ impl<'a> App<'a> {
                 let task = self.store.add(new)?;
                 let id = task.id.unwrap_or_default();
                 self.undo_stack.push(UndoAction::RemoveTask { id });
-                self.status = format!("added #{id}");
+                let where_to = self.project_name(project_id).unwrap_or("?");
+                self.status = format!("added #{id} to @{where_to}");
             }
             Err(_) => self.status = "empty title — not added".to_string(),
         }
         self.mode = Mode::Normal;
-        self.reload_tasks()
+        self.add_target = None;
+        self.sync_views()
     }
 
     fn commit_project(&mut self) -> Result<()> {
@@ -770,6 +837,42 @@ mod tests {
         let projects: Vec<i64> = app.tasks.iter().map(|t| t.project_id).collect();
         let first_work = projects.iter().position(|&p| p == work.id.unwrap()).unwrap();
         assert!(projects[..first_work].iter().all(|&p| p == 1));
+    }
+
+    #[test]
+    fn compact_add_picks_project_then_creates_task_there() {
+        let mut store = FakeStore::new();
+        let work = store.add_project("Work").unwrap();
+        let mut app = App::new(&mut store, true).unwrap();
+        app.on_key(key(KeyCode::Char('a'))).unwrap();
+        assert_eq!(app.mode, Mode::PickingProject);
+        app.on_key(key(KeyCode::Char('j'))).unwrap(); // Inbox -> Work
+        app.on_key(key(KeyCode::Enter)).unwrap(); // choose Work
+        assert!(matches!(app.mode, Mode::AddingTask(_)));
+        type_str(&mut app, "compact task");
+        app.on_key(key(KeyCode::Enter)).unwrap();
+        let added = app.tasks.iter().find(|t| t.title == "compact task").unwrap();
+        assert_eq!(added.project_id, work.id.unwrap());
+    }
+
+    #[test]
+    fn overview_add_uses_project_under_cursor() {
+        let mut store = FakeStore::new();
+        let work = store.add_project("Work").unwrap();
+        let mut app = App::new(&mut store, false).unwrap();
+        add_task(&mut app, "inbox task");
+        app.on_key(key(KeyCode::Char('o'))).unwrap();
+        // Rows: [Header Inbox, Task, Header Work]. Land on the Work header.
+        while app.overview_cursor_project() != work.id {
+            app.on_key(key(KeyCode::Char('j'))).unwrap();
+        }
+        app.on_key(key(KeyCode::Char('a'))).unwrap();
+        type_str(&mut app, "work task");
+        app.on_key(key(KeyCode::Enter)).unwrap();
+        let in_work = app.overview_rows.iter().any(|r| {
+            matches!(r, OverviewRow::Task(t) if t.title == "work task" && t.project_id == work.id.unwrap())
+        });
+        assert!(in_work, "new task should be in Work");
     }
 
     #[test]

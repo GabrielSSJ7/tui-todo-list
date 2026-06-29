@@ -18,6 +18,13 @@ pub fn render(frame: &mut Frame, app: &App) {
         .constraints([Constraint::Min(1), Constraint::Length(3)])
         .split(frame.area());
 
+    // Project picker takes over the top area while choosing an add target.
+    if app.mode == Mode::PickingProject {
+        render_project_picker(frame, app, rows[0]);
+        render_footer(frame, app, rows[1]);
+        return;
+    }
+
     // Overview replaces the panes with one grouped, full-width list.
     if app.show_overview {
         render_overview(frame, app, rows[0]);
@@ -72,6 +79,25 @@ fn render_projects(frame: &mut Frame, app: &App, area: Rect) {
 
 fn project_to_item(project: &Project) -> ListItem<'_> {
     ListItem::new(Line::from(project.name.clone()))
+}
+
+/// Full-area list to choose which project a new task goes to.
+fn render_project_picker(frame: &mut Frame, app: &App, area: Rect) {
+    let items: Vec<ListItem> = app.projects.iter().map(project_to_item).collect();
+    let list = List::new(items)
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(Color::Cyan))
+                .title(" add to which project? "),
+        )
+        .highlight_style(Style::default().add_modifier(Modifier::REVERSED))
+        .highlight_symbol("▶ ");
+    let mut state = ListState::default();
+    if !app.projects.is_empty() {
+        state.select(Some(app.pick_selected));
+    }
+    frame.render_stateful_widget(list, area, &mut state);
 }
 
 fn render_tasks(frame: &mut Frame, app: &App, area: Rect) {
@@ -138,7 +164,7 @@ fn render_overview(frame: &mut Frame, app: &App, area: Rect) {
 
 fn overview_row_to_item(row: &OverviewRow, width: usize) -> ListItem<'_> {
     match row {
-        OverviewRow::Header { name, count } => ListItem::new(Line::from(Span::styled(
+        OverviewRow::Header { name, count, .. } => ListItem::new(Line::from(Span::styled(
             format!("@{name} ({count})"),
             Style::default().fg(Color::Blue).add_modifier(Modifier::BOLD),
         ))),
@@ -270,6 +296,9 @@ fn render_footer(frame: &mut Frame, app: &App, area: Rect) {
         Mode::AddingTask(buf) => (" new task (enter=save esc=cancel) ", format!("{buf}▏")),
         Mode::AddingProject(buf) => {
             (" new project (enter=save esc=cancel) ", format!("{buf}▏"))
+        }
+        Mode::PickingProject => {
+            (" pick project ", "j/k move · enter select · esc cancel".to_string())
         }
         Mode::Normal => (" status ", app.status.clone()),
     };

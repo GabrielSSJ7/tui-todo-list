@@ -50,7 +50,7 @@ Left pane = projects, right pane = tasks of the selected project.
 | `tab`      | switch focus (projects/tasks)  |
 | `j`/`k`    | move cursor in focused pane    |
 | `n`        | new project                    |
-| `a`        | add task (to selected project) |
+| `a`        | add task (see below)           |
 | `space`/`enter` | toggle done               |
 | `p`        | cycle priority                 |
 | `s`        | toggle sort (priority/project) |
@@ -61,6 +61,11 @@ Left pane = projects, right pane = tasks of the selected project.
 | `q`/`esc`  | quit                           |
 
 Tasks with a deadline show `due M-D` (red when overdue).
+
+Adding a task with `a` chooses the target project by context:
+- **full view** — the project selected in the sidebar
+- **overview** (`o`) — the project the cursor is currently inside
+- **compact** (the floating window) — prompts you to pick a project first
 
 ## tmux
 
