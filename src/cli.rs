@@ -33,6 +33,13 @@ pub enum Command {
         #[arg(short = 'P', long)]
         project: Option<String>,
     },
+    /// Show all projects with their tasks grouped beneath each.
+    #[command(visible_alias = "tree")]
+    Overview {
+        /// Include completed tasks too.
+        #[arg(short, long)]
+        all: bool,
+    },
     /// Mark a task done by id.
     Done { id: i64 },
     /// Move a task to another project.

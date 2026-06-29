@@ -53,6 +53,7 @@ fn run_text_command(command: Command, store: &mut dyn TaskStore) -> Result<()> {
             commands::add(store, &title.join(" "), priority.into(), project.as_deref())?
         }
         Command::List { all, project } => commands::list(store, all, project.as_deref())?,
+        Command::Overview { all } => commands::overview(store, all)?,
         Command::Done { id } => commands::done(store, id)?,
         Command::Move { id, project } => commands::move_task(store, id, &project)?,
         Command::Project { action } => run_project_action(action, store)?,

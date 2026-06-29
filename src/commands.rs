@@ -73,22 +73,61 @@ fn project_names(store: &dyn TaskStore) -> Result<HashMap<i64, String>> {
     Ok(map)
 }
 
+/// Checkbox mark for a task's status.
+fn status_mark(status: Status) -> char {
+    match status {
+        Status::Open => ' ',
+        Status::Done => 'x',
+    }
+}
+
 /// One list row: `#id [x] priority @Project title`.
 fn format_row(task: &Task, names: &HashMap<i64, String>) -> String {
-    let mark = match task.status {
-        Status::Open => " ",
-        Status::Done => "x",
-    };
     let unknown = "?".to_string();
     let project = names.get(&task.project_id).unwrap_or(&unknown);
     format!(
         "#{:<4} [{}] {:<6} @{:<10} {}",
         task.id.unwrap_or_default(),
-        mark,
+        status_mark(task.status),
         task.priority,
         project,
         task.title
     )
+}
+
+/// One indented row under a project header: `  #id [x] priority title`.
+fn format_grouped_row(task: &Task) -> String {
+    format!(
+        "  #{:<4} [{}] {:<6} {}",
+        task.id.unwrap_or_default(),
+        status_mark(task.status),
+        task.priority,
+        task.title
+    )
+}
+
+/// Every project with its tasks listed beneath a header — a single grouped
+/// overview. `include_done` controls whether completed tasks appear.
+pub fn overview(store: &dyn TaskStore, include_done: bool) -> Result<String> {
+    let status = if include_done {
+        StatusFilter::All
+    } else {
+        StatusFilter::Only(Status::Open)
+    };
+    let mut blocks = Vec::new();
+    for project in store.list_projects()? {
+        let id = project.id.expect("listed project has id");
+        let tasks = store.list(TaskQuery::all().with_status(status).in_project(id))?;
+        let mut block = vec![format!("@{} ({})", project.name, tasks.len())];
+        if tasks.is_empty() {
+            block.push("  (no tasks)".to_string());
+        } else {
+            block.extend(tasks.iter().map(format_grouped_row));
+        }
+        blocks.push(block.join("\n"));
+    }
+    // Blank line between project blocks for readability.
+    Ok(blocks.join("\n\n"))
 }
 
 /// Mark a task done.
@@ -224,6 +263,31 @@ mod tests {
         add(&mut s, "stay alive", Priority::Low, Some("Work")).unwrap();
         remove_project(&mut s, work.id.unwrap()).unwrap();
         assert!(list(&s, true, None).unwrap().contains("stay alive"));
+    }
+
+    #[test]
+    fn overview_groups_tasks_under_each_project() {
+        let mut s = FakeStore::new();
+        add_project(&mut s, "Work").unwrap();
+        add(&mut s, "inbox task", Priority::Low, None).unwrap();
+        add(&mut s, "work task", Priority::High, Some("Work")).unwrap();
+        let out = overview(&s, false).unwrap();
+        // Inbox header precedes its task; Work header precedes its task.
+        let inbox_at = out.find("@Inbox").unwrap();
+        let work_at = out.find("@Work").unwrap();
+        assert!(inbox_at < out.find("inbox task").unwrap());
+        assert!(work_at < out.find("work task").unwrap());
+        // Inbox's task should not appear under Work's block.
+        assert!(out.find("inbox task").unwrap() < work_at);
+    }
+
+    #[test]
+    fn overview_shows_empty_projects() {
+        let mut s = FakeStore::new();
+        add_project(&mut s, "Empty").unwrap();
+        let out = overview(&s, false).unwrap();
+        assert!(out.contains("@Empty (0)"));
+        assert!(out.contains("(no tasks)"));
     }
 
     #[test]

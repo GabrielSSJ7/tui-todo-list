@@ -66,7 +66,19 @@ fn project_to_item(project: &Project) -> ListItem<'_> {
 }
 
 fn render_tasks(frame: &mut Frame, app: &App, area: Rect) {
-    let items: Vec<ListItem> = app.tasks.iter().map(task_to_item).collect();
+    // Compact spans every project, so each row shows its @project tag.
+    let items: Vec<ListItem> = app
+        .tasks
+        .iter()
+        .map(|t| {
+            let project = if app.compact {
+                app.project_name(t.project_id)
+            } else {
+                None
+            };
+            task_to_item(t, project)
+        })
+        .collect();
     let scope = if app.compact {
         "to do"
     } else {
@@ -90,8 +102,9 @@ fn render_tasks(frame: &mut Frame, app: &App, area: Rect) {
     frame.render_stateful_widget(list, area, &mut state);
 }
 
-/// Render one task row with a checkbox and priority color.
-fn task_to_item(task: &Task) -> ListItem<'_> {
+/// Render one task row with a checkbox and priority color. When `project`
+/// is Some (compact all-projects view), prepend a dimmed `@project` tag.
+fn task_to_item<'a>(task: &'a Task, project: Option<&'a str>) -> ListItem<'a> {
     let mark = match task.status {
         Status::Open => "[ ]",
         Status::Done => "[x]",
@@ -102,12 +115,18 @@ fn task_to_item(task: &Task) -> ListItem<'_> {
             .add_modifier(Modifier::CROSSED_OUT),
         Status::Open => Style::default(),
     };
-    let line = Line::from(vec![
+    let mut spans = vec![
         Span::styled(format!("{mark} "), priority_style(task.priority)),
         Span::styled(format!("{:<6} ", task.priority), priority_style(task.priority)),
-        Span::styled(task.title.clone(), title_style),
-    ]);
-    ListItem::new(line)
+    ];
+    if let Some(name) = project {
+        spans.push(Span::styled(
+            format!("@{name} "),
+            Style::default().fg(Color::Blue),
+        ));
+    }
+    spans.push(Span::styled(task.title.clone(), title_style));
+    ListItem::new(Line::from(spans))
 }
 
 fn priority_style(priority: Priority) -> Style {

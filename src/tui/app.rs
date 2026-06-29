@@ -103,6 +103,14 @@ impl<'a> App<'a> {
         self.projects.get(self.selected_project)
     }
 
+    /// Name of the project a task belongs to, for the compact all-projects view.
+    pub fn project_name(&self, project_id: i64) -> Option<&str> {
+        self.projects
+            .iter()
+            .find(|p| p.id == Some(project_id))
+            .map(|p| p.name.as_str())
+    }
+
     fn current_project_id(&self) -> Option<i64> {
         self.current_project().and_then(|p| p.id)
     }
