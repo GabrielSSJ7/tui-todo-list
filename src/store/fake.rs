@@ -107,6 +107,14 @@ impl TaskStore for FakeStore {
         Ok(())
     }
 
+    fn restore_task(&mut self, task: &Task) -> Result<()> {
+        if task.id.is_none() {
+            return Err(TodoError::Invalid("cannot restore a task without an id".to_string()));
+        }
+        self.tasks.push(task.clone());
+        Ok(())
+    }
+
     fn open_count(&self) -> Result<usize> {
         Ok(self.tasks.iter().filter(|t| t.status == Status::Open).count())
     }

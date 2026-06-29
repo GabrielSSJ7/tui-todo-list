@@ -25,8 +25,38 @@ pub enum Mode {
     AddingProject(String),
 }
 
+/// A reversible step recorded on the undo stack. Each variant is the
+/// *inverse* operation needed to undo what the user just did.
+#[derive(Debug, Clone)]
+enum UndoAction {
+    /// Undo a status toggle: set the task back to `prev`.
+    Status { id: i64, prev: Status },
+    /// Undo a priority change: set the task back to `prev`.
+    Priority { id: i64, prev: Priority },
+    /// Undo an add: remove the task that was created.
+    RemoveTask { id: i64 },
+    /// Undo a delete: re-insert the removed task verbatim.
+    RestoreTask { task: Task },
+    /// Undo a project creation: remove the project that was created.
+    RemoveProject { id: i64 },
+}
+
+impl UndoAction {
+    /// Short label for the status line, e.g. "delete".
+    fn label(&self) -> &'static str {
+        match self {
+            UndoAction::Status { .. } => "toggle",
+            UndoAction::Priority { .. } => "priority",
+            UndoAction::RemoveTask { .. } => "add",
+            UndoAction::RestoreTask { .. } => "delete",
+            UndoAction::RemoveProject { .. } => "new project",
+        }
+    }
+}
+
 pub struct App<'a> {
     store: &'a mut dyn TaskStore,
+    undo_stack: Vec<UndoAction>,
     pub projects: Vec<Project>,
     pub selected_project: usize,
     pub tasks: Vec<Task>,
@@ -44,12 +74,14 @@ pub struct App<'a> {
 impl<'a> App<'a> {
     pub fn new(store: &'a mut dyn TaskStore, compact: bool) -> Result<Self> {
         let status = if compact {
-            "space done · p pri · q quit".to_string()
+            "space done · p pri · u undo · q quit".to_string()
         } else {
-            "tab switch · a add · n project · space toggle · p pri · d del · q quit".to_string()
+            "tab switch · a add · n project · space toggle · p pri · d del · u undo · q quit"
+                .to_string()
         };
         let mut app = App {
             store,
+            undo_stack: Vec::new(),
             projects: Vec::new(),
             selected_project: 0,
             tasks: Vec::new(),
@@ -118,6 +150,7 @@ impl<'a> App<'a> {
             KeyCode::Char('q') | KeyCode::Esc => self.should_quit = true,
             KeyCode::Tab | KeyCode::BackTab => self.toggle_focus(),
             KeyCode::Char('n') => self.mode = Mode::AddingProject(String::new()),
+            KeyCode::Char('u') => self.undo()?,
             KeyCode::Char('h') => self.toggle_show_done()?,
             KeyCode::Char('j') | KeyCode::Down => self.move_down()?,
             KeyCode::Char('k') | KeyCode::Up => self.move_up()?,
@@ -179,29 +212,29 @@ impl<'a> App<'a> {
         self.reload_tasks()
     }
 
-    fn selected_id(&self) -> Option<i64> {
-        self.tasks.get(self.selected).and_then(|t| t.id)
-    }
-
     fn toggle_selected(&mut self) -> Result<()> {
         let Some(task) = self.tasks.get(self.selected) else {
             return Ok(());
         };
-        let next = match task.status {
+        let prev = task.status;
+        let next = match prev {
             Status::Open => Status::Done,
             Status::Done => Status::Open,
         };
         let id = task.id.expect("listed task has an id");
         self.store.set_status(id, next)?;
+        self.undo_stack.push(UndoAction::Status { id, prev });
         self.reload_tasks()
     }
 
     fn delete_selected(&mut self) -> Result<()> {
-        let Some(id) = self.selected_id() else {
+        let Some(task) = self.tasks.get(self.selected).cloned() else {
             return Ok(());
         };
+        let id = task.id.expect("listed task has an id");
         self.store.remove(id)?;
-        self.status = format!("removed #{id}");
+        self.undo_stack.push(UndoAction::RestoreTask { task });
+        self.status = format!("removed #{id} (u to undo)");
         self.reload_tasks()
     }
 
@@ -210,19 +243,51 @@ impl<'a> App<'a> {
         let Some(task) = self.tasks.get(self.selected) else {
             return Ok(());
         };
-        let next = match task.priority {
+        let prev = task.priority;
+        let next = match prev {
             Priority::Low => Priority::Medium,
             Priority::Medium => Priority::High,
             Priority::High => Priority::Low,
         };
         let id = task.id.expect("listed task has an id");
         self.store.set_priority(id, next)?;
+        self.undo_stack.push(UndoAction::Priority { id, prev });
         self.reload_tasks()
     }
 
     fn toggle_show_done(&mut self) -> Result<()> {
         self.show_done = !self.show_done;
         self.reload_tasks()
+    }
+
+    /// Pop and apply the most recent inverse action. A failed undo (e.g. the
+    /// target was deleted by another action) is reported, not fatal.
+    fn undo(&mut self) -> Result<()> {
+        let Some(action) = self.undo_stack.pop() else {
+            self.status = "nothing to undo".to_string();
+            return Ok(());
+        };
+        let label = action.label();
+        match self.apply_undo(action) {
+            Ok(()) => self.status = format!("undid {label}"),
+            Err(e) => self.status = format!("undo failed: {e}"),
+        }
+        self.refresh()
+    }
+
+    fn apply_undo(&mut self, action: UndoAction) -> Result<()> {
+        match action {
+            UndoAction::Status { id, prev } => {
+                self.store.set_status(id, prev)?;
+            }
+            UndoAction::Priority { id, prev } => {
+                self.store.set_priority(id, prev)?;
+            }
+            UndoAction::RemoveTask { id } => self.store.remove(id)?,
+            UndoAction::RestoreTask { task } => self.store.restore_task(&task)?,
+            UndoAction::RemoveProject { id } => self.store.remove_project(id)?,
+        }
+        Ok(())
     }
 
     fn on_task_input(&mut self, key: KeyEvent) -> Result<()> {
@@ -270,7 +335,9 @@ impl<'a> App<'a> {
         match NewTask::new(buf.clone(), Priority::Medium, project_id) {
             Ok(new) => {
                 let task = self.store.add(new)?;
-                self.status = format!("added #{}", task.id.unwrap_or_default());
+                let id = task.id.unwrap_or_default();
+                self.undo_stack.push(UndoAction::RemoveTask { id });
+                self.status = format!("added #{id}");
             }
             Err(_) => self.status = "empty title — not added".to_string(),
         }
@@ -284,7 +351,12 @@ impl<'a> App<'a> {
         };
         match clean_project_name(buf.clone()) {
             Ok(name) => match self.store.add_project(&name) {
-                Ok(p) => self.status = format!("created @{}", p.name),
+                Ok(p) => {
+                    if let Some(id) = p.id {
+                        self.undo_stack.push(UndoAction::RemoveProject { id });
+                    }
+                    self.status = format!("created @{}", p.name);
+                }
                 Err(e) => self.status = e.to_string(),
             },
             Err(_) => self.status = "empty name — not created".to_string(),
@@ -416,6 +488,70 @@ mod tests {
         let mut app = App::new(&mut store, false).unwrap();
         app.on_key(key(KeyCode::Char('q'))).unwrap();
         assert!(app.should_quit);
+    }
+
+    #[test]
+    fn undo_delete_restores_task() {
+        let mut store = FakeStore::new();
+        let mut app = App::new(&mut store, false).unwrap();
+        add_task(&mut app, "precious");
+        app.on_key(key(KeyCode::Char('d'))).unwrap();
+        assert!(app.tasks.is_empty());
+        app.on_key(key(KeyCode::Char('u'))).unwrap();
+        assert_eq!(app.tasks.len(), 1);
+        assert_eq!(app.tasks[0].title, "precious");
+    }
+
+    #[test]
+    fn undo_add_removes_task() {
+        let mut store = FakeStore::new();
+        let mut app = App::new(&mut store, false).unwrap();
+        add_task(&mut app, "oops");
+        app.on_key(key(KeyCode::Char('u'))).unwrap();
+        assert!(app.tasks.is_empty());
+    }
+
+    #[test]
+    fn undo_toggle_reverts_status() {
+        let mut store = FakeStore::new();
+        let mut app = App::new(&mut store, false).unwrap();
+        add_task(&mut app, "task");
+        app.on_key(key(KeyCode::Char(' '))).unwrap();
+        assert_eq!(app.tasks[0].status, Status::Done);
+        app.on_key(key(KeyCode::Char('u'))).unwrap();
+        assert_eq!(app.tasks[0].status, Status::Open);
+    }
+
+    #[test]
+    fn undo_priority_reverts() {
+        let mut store = FakeStore::new();
+        let mut app = App::new(&mut store, false).unwrap();
+        add_task(&mut app, "task"); // Medium
+        app.on_key(key(KeyCode::Char('p'))).unwrap();
+        assert_eq!(app.tasks[0].priority, Priority::High);
+        app.on_key(key(KeyCode::Char('u'))).unwrap();
+        assert_eq!(app.tasks[0].priority, Priority::Medium);
+    }
+
+    #[test]
+    fn undo_is_lifo_across_actions() {
+        let mut store = FakeStore::new();
+        let mut app = App::new(&mut store, false).unwrap();
+        add_task(&mut app, "keep");
+        app.on_key(key(KeyCode::Char('p'))).unwrap(); // High
+        app.on_key(key(KeyCode::Char('u'))).unwrap(); // undo priority -> Medium
+        assert_eq!(app.tasks[0].priority, Priority::Medium);
+        assert_eq!(app.tasks.len(), 1);
+        app.on_key(key(KeyCode::Char('u'))).unwrap(); // undo add -> gone
+        assert!(app.tasks.is_empty());
+    }
+
+    #[test]
+    fn undo_empty_stack_is_noop() {
+        let mut store = FakeStore::new();
+        let mut app = App::new(&mut store, false).unwrap();
+        app.on_key(key(KeyCode::Char('u'))).unwrap();
+        assert_eq!(app.status, "nothing to undo");
     }
 
     #[test]

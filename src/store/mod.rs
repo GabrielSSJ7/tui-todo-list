@@ -16,6 +16,9 @@ pub trait TaskStore {
     fn set_priority(&mut self, id: i64, priority: Priority) -> Result<Task>;
     fn set_project(&mut self, id: i64, project_id: i64) -> Result<Task>;
     fn remove(&mut self, id: i64) -> Result<()>;
+    /// Re-insert a previously removed task, preserving its id and fields.
+    /// Used to undo a deletion faithfully.
+    fn restore_task(&mut self, task: &Task) -> Result<()>;
 
     /// Count of open tasks across all projects — for the tmux status line.
     fn open_count(&self) -> Result<usize>;

@@ -51,6 +51,7 @@ Left pane = projects, right pane = tasks of the selected project.
 | `space`/`enter` | toggle done               |
 | `p`        | cycle priority                 |
 | `d`        | delete selected task           |
+| `u`        | undo last action               |
 | `h`        | hide/show completed            |
 | `q`/`esc`  | quit                           |
 

@@ -236,6 +236,27 @@ impl TaskStore for SqliteStore {
         Ok(())
     }
 
+    fn restore_task(&mut self, task: &Task) -> Result<()> {
+        let id = task.id.ok_or_else(|| {
+            TodoError::Invalid("cannot restore a task without an id".to_string())
+        })?;
+        self.conn
+            .execute(
+                "INSERT INTO tasks (id, title, status, priority, project_id, created_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                rusqlite::params![
+                    id,
+                    task.title,
+                    task.status.as_tag(),
+                    task.priority.as_tag(),
+                    task.project_id,
+                    task.created_at.to_rfc3339(),
+                ],
+            )
+            .map_err(storage)?;
+        Ok(())
+    }
+
     fn open_count(&self) -> Result<usize> {
         let n: i64 = self
             .conn
@@ -440,6 +461,19 @@ mod tests {
         assert_eq!(s.open_count().unwrap(), 0);
         let done = s.list(TaskQuery::all().with_status(StatusFilter::Only(Status::Done)));
         assert_eq!(done.unwrap().len(), 1);
+    }
+
+    #[test]
+    fn restore_task_reinserts_with_same_id() {
+        let mut s = store();
+        let t = s.add(new_task(&s, "bring back", Priority::High)).unwrap();
+        let id = t.id.unwrap();
+        s.remove(id).unwrap();
+        assert!(matches!(s.get(id), Err(TodoError::NotFound(_))));
+        s.restore_task(&t).unwrap();
+        let back = s.get(id).unwrap();
+        assert_eq!(back.title, "bring back");
+        assert_eq!(back.priority, Priority::High);
     }
 
     #[test]
