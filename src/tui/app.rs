@@ -29,6 +29,14 @@ pub enum OverviewRow {
     Task(Task),
 }
 
+/// An edit applied to the selected task while the overview is open.
+#[derive(Debug, Clone, Copy)]
+enum OverviewAct {
+    Toggle,
+    Priority,
+    Delete,
+}
+
 /// What the UI is currently doing.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Mode {
@@ -266,9 +274,77 @@ impl<'a> App<'a> {
                 self.overview_selected =
                     clamp_index(self.overview_selected, -1, self.overview_rows.len());
             }
+            KeyCode::Char(' ') | KeyCode::Enter => self.act_on_overview(OverviewAct::Toggle)?,
+            KeyCode::Char('p') => self.act_on_overview(OverviewAct::Priority)?,
+            KeyCode::Char('d') => self.act_on_overview(OverviewAct::Delete)?,
+            KeyCode::Char('u') => self.undo_in_overview()?,
             _ => {}
         }
         Ok(())
+    }
+
+    /// The task on the currently selected overview row, if it's not a header.
+    fn overview_selected_task(&self) -> Option<Task> {
+        match self.overview_rows.get(self.overview_selected) {
+            Some(OverviewRow::Task(task)) => Some(task.clone()),
+            _ => None,
+        }
+    }
+
+    /// Apply an action to the selected overview task, then rebuild both the
+    /// main task list and the overview so the view stays current.
+    fn act_on_overview(&mut self, act: OverviewAct) -> Result<()> {
+        let Some(task) = self.overview_selected_task() else {
+            return Ok(());
+        };
+        let id = task.id.expect("listed task has an id");
+        match act {
+            OverviewAct::Toggle => {
+                let prev = task.status;
+                let next = match prev {
+                    Status::Open => Status::Done,
+                    Status::Done => Status::Open,
+                };
+                self.store.set_status(id, next)?;
+                self.undo_stack.push(UndoAction::Status { id, prev });
+            }
+            OverviewAct::Priority => {
+                let prev = task.priority;
+                let next = match prev {
+                    Priority::Low => Priority::Medium,
+                    Priority::Medium => Priority::High,
+                    Priority::High => Priority::Low,
+                };
+                self.store.set_priority(id, next)?;
+                self.undo_stack.push(UndoAction::Priority { id, prev });
+            }
+            OverviewAct::Delete => {
+                self.store.remove(id)?;
+                self.undo_stack.push(UndoAction::RestoreTask { task });
+                self.status = format!("removed #{id} (u to undo)");
+            }
+        }
+        self.sync_views()
+    }
+
+    fn undo_in_overview(&mut self) -> Result<()> {
+        let Some(action) = self.undo_stack.pop() else {
+            self.status = "nothing to undo".to_string();
+            return Ok(());
+        };
+        let label = action.label();
+        match self.apply_undo(action) {
+            Ok(()) => self.status = format!("undid {label}"),
+            Err(e) => self.status = format!("undo failed: {e}"),
+        }
+        self.sync_views()
+    }
+
+    /// Keep the hidden main task list and the overview rows consistent after
+    /// a mutation made while the overview is open.
+    fn sync_views(&mut self) -> Result<()> {
+        self.reload_tasks()?;
+        self.build_overview()
     }
 
     fn toggle_overview(&mut self) -> Result<()> {
@@ -723,15 +799,42 @@ mod tests {
     }
 
     #[test]
-    fn overview_is_read_only_no_delete() {
+    fn overview_space_toggles_selected_task() {
         let mut store = FakeStore::new();
         let mut app = App::new(&mut store, false).unwrap();
-        add_task(&mut app, "safe");
+        add_task(&mut app, "finish me");
         app.on_key(key(KeyCode::Char('o'))).unwrap();
-        // 'd' must not delete while in overview.
+        // Row 0 is the Inbox header; move down to the task row.
+        app.on_key(key(KeyCode::Char('j'))).unwrap();
+        app.on_key(key(KeyCode::Char(' '))).unwrap();
+        let done = app.overview_rows.iter().any(|r| {
+            matches!(r, OverviewRow::Task(t) if t.status == Status::Done)
+        });
+        assert!(done, "selected task should be marked done");
+    }
+
+    #[test]
+    fn overview_delete_then_undo_restores() {
+        let mut store = FakeStore::new();
+        let mut app = App::new(&mut store, false).unwrap();
+        add_task(&mut app, "doomed");
+        app.on_key(key(KeyCode::Char('o'))).unwrap();
+        app.on_key(key(KeyCode::Char('j'))).unwrap(); // onto the task
         app.on_key(key(KeyCode::Char('d'))).unwrap();
-        app.on_key(key(KeyCode::Char('o'))).unwrap(); // back to normal
-        assert_eq!(app.tasks.len(), 1, "task survived overview");
+        assert!(!app.overview_rows.iter().any(|r| matches!(r, OverviewRow::Task(_))));
+        app.on_key(key(KeyCode::Char('u'))).unwrap();
+        assert!(app.overview_rows.iter().any(|r| matches!(r, OverviewRow::Task(_))));
+    }
+
+    #[test]
+    fn overview_action_on_header_is_noop() {
+        let mut store = FakeStore::new();
+        let mut app = App::new(&mut store, false).unwrap();
+        add_task(&mut app, "keep");
+        app.on_key(key(KeyCode::Char('o'))).unwrap();
+        // overview_selected = 0 → Inbox header; delete must do nothing.
+        app.on_key(key(KeyCode::Char('d'))).unwrap();
+        assert!(app.overview_rows.iter().any(|r| matches!(r, OverviewRow::Task(_))));
     }
 
     #[test]
