@@ -75,6 +75,7 @@ fn project_to_item(project: &Project) -> ListItem<'_> {
 }
 
 fn render_tasks(frame: &mut Frame, app: &App, area: Rect) {
+    let width = inner_width(area);
     // Compact spans every project, so each row shows its @project tag.
     let items: Vec<ListItem> = app
         .tasks
@@ -85,7 +86,7 @@ fn render_tasks(frame: &mut Frame, app: &App, area: Rect) {
             } else {
                 None
             };
-            task_to_item(t, project)
+            task_to_item(t, project, width)
         })
         .collect();
     let scope = if app.compact {
@@ -113,7 +114,12 @@ fn render_tasks(frame: &mut Frame, app: &App, area: Rect) {
 
 /// Render the grouped overview: project headers with their tasks beneath.
 fn render_overview(frame: &mut Frame, app: &App, area: Rect) {
-    let items: Vec<ListItem> = app.overview_rows.iter().map(overview_row_to_item).collect();
+    let width = inner_width(area);
+    let items: Vec<ListItem> = app
+        .overview_rows
+        .iter()
+        .map(|r| overview_row_to_item(r, width))
+        .collect();
     let list = List::new(items)
         .block(
             Block::default()
@@ -130,44 +136,112 @@ fn render_overview(frame: &mut Frame, app: &App, area: Rect) {
     frame.render_stateful_widget(list, area, &mut state);
 }
 
-fn overview_row_to_item(row: &OverviewRow) -> ListItem<'_> {
+fn overview_row_to_item(row: &OverviewRow, width: usize) -> ListItem<'_> {
     match row {
         OverviewRow::Header { name, count } => ListItem::new(Line::from(Span::styled(
             format!("@{name} ({count})"),
             Style::default().fg(Color::Blue).add_modifier(Modifier::BOLD),
         ))),
-        OverviewRow::Task(task) => task_to_item(task, None),
+        OverviewRow::Task(task) => task_to_item(task, None, width),
     }
 }
 
-/// Render one task row with a checkbox and priority color. When `project`
-/// is Some (compact all-projects view), prepend a dimmed `@project` tag.
-fn task_to_item<'a>(task: &'a Task, project: Option<&'a str>) -> ListItem<'a> {
-    let mark = match task.status {
-        Status::Open => "[ ]",
-        Status::Done => "[x]",
-    };
+/// Usable text width inside a bordered list: subtract the two borders and a
+/// small margin for the selection symbol so wrapped rows never clip.
+fn inner_width(area: Rect) -> usize {
+    (area.width as usize).saturating_sub(4)
+}
+
+/// Render one task row. The title wraps to multiple lines when it exceeds the
+/// pane width, with continuation lines indented under the title column.
+/// When `project` is Some (compact all-projects view), show a `@project` tag.
+fn task_to_item<'a>(task: &'a Task, project: Option<&'a str>, width: usize) -> ListItem<'a> {
     let title_style = match task.status {
         Status::Done => Style::default()
             .fg(Color::DarkGray)
             .add_modifier(Modifier::CROSSED_OUT),
         Status::Open => Style::default(),
     };
+    let prefix = row_prefix_spans(task, project);
+    let prefix_width: usize = prefix.iter().map(|s| s.content.chars().count()).sum();
+    // Leave room for the prefix; keep a sane minimum so titles always wrap.
+    let avail = width.saturating_sub(prefix_width).max(10);
+    let chunks = wrap_title(&task.title, avail);
+
+    let indent = " ".repeat(prefix_width);
+    let mut lines: Vec<Line> = Vec::with_capacity(chunks.len());
+    for (i, chunk) in chunks.iter().enumerate() {
+        let mut spans = if i == 0 {
+            prefix.clone()
+        } else {
+            vec![Span::raw(indent.clone())]
+        };
+        spans.push(Span::styled(chunk.clone(), title_style));
+        lines.push(Line::from(spans));
+    }
+    // Deadline goes on the last line so it stays visible after wrapping.
+    if let Some(span) = due_span(task) {
+        if let Some(last) = lines.last_mut() {
+            last.spans.push(span);
+        }
+    }
+    ListItem::new(lines)
+}
+
+/// The fixed leading spans of a task row: checkbox, priority, optional project.
+fn row_prefix_spans<'a>(task: &Task, project: Option<&'a str>) -> Vec<Span<'a>> {
+    let mark = match task.status {
+        Status::Open => "[ ]",
+        Status::Done => "[x]",
+    };
     let mut spans = vec![
         Span::styled(format!("{mark} "), priority_style(task.priority)),
         Span::styled(format!("{:<6} ", task.priority), priority_style(task.priority)),
     ];
     if let Some(name) = project {
-        spans.push(Span::styled(
-            format!("@{name} "),
-            Style::default().fg(Color::Blue),
-        ));
+        spans.push(Span::styled(format!("@{name} "), Style::default().fg(Color::Blue)));
     }
-    spans.push(Span::styled(task.title.clone(), title_style));
-    if let Some(span) = due_span(task) {
-        spans.push(span);
+    spans
+}
+
+/// Greedy word-wrap to `width` columns. Words longer than `width` are hard
+/// split so a single long token can't overflow the pane.
+fn wrap_title(title: &str, width: usize) -> Vec<String> {
+    let width = width.max(1);
+    let mut lines = Vec::new();
+    let mut line = String::new();
+    for word in title.split_whitespace() {
+        if word.chars().count() > width {
+            if !line.is_empty() {
+                lines.push(std::mem::take(&mut line));
+            }
+            for piece in hard_split(word, width) {
+                lines.push(piece);
+            }
+            continue;
+        }
+        let extra = if line.is_empty() { 0 } else { 1 };
+        if line.chars().count() + extra + word.chars().count() > width {
+            lines.push(std::mem::take(&mut line));
+        }
+        if !line.is_empty() {
+            line.push(' ');
+        }
+        line.push_str(word);
     }
-    ListItem::new(Line::from(spans))
+    if !line.is_empty() {
+        lines.push(line);
+    }
+    if lines.is_empty() {
+        lines.push(String::new());
+    }
+    lines
+}
+
+/// Split an over-long word into `width`-sized chunks (by chars).
+fn hard_split(word: &str, width: usize) -> Vec<String> {
+    let chars: Vec<char> = word.chars().collect();
+    chars.chunks(width).map(|c| c.iter().collect()).collect()
 }
 
 /// A `due M-D` span, red when overdue and still open. None if no deadline.
@@ -201,4 +275,34 @@ fn render_footer(frame: &mut Frame, app: &App, area: Rect) {
     };
     let footer = Paragraph::new(body).block(Block::default().borders(Borders::ALL).title(title));
     frame.render_widget(footer, area);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn wrap_keeps_words_whole_within_width() {
+        let lines = wrap_title("alpha beta gamma delta", 11);
+        assert!(lines.iter().all(|l| l.chars().count() <= 11), "{lines:?}");
+        // Nothing is dropped: joining back yields the original words.
+        assert_eq!(lines.join(" "), "alpha beta gamma delta");
+    }
+
+    #[test]
+    fn wrap_hard_splits_overlong_word() {
+        let lines = wrap_title("supercalifragilistic", 5);
+        assert!(lines.iter().all(|l| l.chars().count() <= 5));
+        assert_eq!(lines.concat(), "supercalifragilistic");
+    }
+
+    #[test]
+    fn wrap_short_title_is_single_line() {
+        assert_eq!(wrap_title("hi there", 40), vec!["hi there".to_string()]);
+    }
+
+    #[test]
+    fn wrap_empty_title_yields_one_empty_line() {
+        assert_eq!(wrap_title("", 10), vec![String::new()]);
+    }
 }
