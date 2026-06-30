@@ -292,10 +292,11 @@ fn priority_style(priority: Priority) -> Style {
 
 /// Footer shows the active input box, otherwise the status hint.
 fn render_footer(frame: &mut Frame, app: &App, area: Rect) {
+    let width = inner_width(area);
     let (title, body) = match &app.mode {
-        Mode::AddingTask(buf) => (" new task (enter=save esc=cancel) ", format!("{buf}▏")),
+        Mode::AddingTask(buf) => (" new task (enter=save esc=cancel) ", input_view(buf, width)),
         Mode::AddingProject(buf) => {
-            (" new project (enter=save esc=cancel) ", format!("{buf}▏"))
+            (" new project (enter=save esc=cancel) ", input_view(buf, width))
         }
         Mode::PickingProject => {
             (" pick project ", "j/k move · enter select · esc cancel".to_string())
@@ -304,6 +305,20 @@ fn render_footer(frame: &mut Frame, app: &App, area: Rect) {
     };
     let footer = Paragraph::new(body).block(Block::default().borders(Borders::ALL).title(title));
     frame.render_widget(footer, area);
+}
+
+/// Render the input buffer with a trailing cursor, scrolled so the end stays
+/// visible: when the text is wider than the box, show the tail behind a `…`.
+fn input_view(buf: &str, width: usize) -> String {
+    let cursor = '▏';
+    let avail = width.max(3); // room for at least "…x▏"
+    if buf.chars().count() + 1 <= avail {
+        return format!("{buf}{cursor}");
+    }
+    // Keep the rightmost chars; reserve one cell for `…` and one for the cursor.
+    let keep = avail.saturating_sub(2);
+    let tail: String = buf.chars().skip(buf.chars().count() - keep).collect();
+    format!("…{tail}{cursor}")
 }
 
 #[cfg(test)]
@@ -333,5 +348,20 @@ mod tests {
     #[test]
     fn wrap_empty_title_yields_one_empty_line() {
         assert_eq!(wrap_title("", 10), vec![String::new()]);
+    }
+
+    #[test]
+    fn input_view_shows_full_text_when_it_fits() {
+        assert_eq!(input_view("hello", 20), "hello▏");
+    }
+
+    #[test]
+    fn input_view_scrolls_to_tail_when_too_long() {
+        // width 8 -> keep last 6 chars behind an ellipsis, plus the cursor.
+        let out = input_view("abcdefghij", 8);
+        assert!(out.starts_with('…'), "{out}");
+        assert!(out.ends_with('▏'), "{out}");
+        assert!(out.contains("efghij"), "tail visible: {out}");
+        assert_eq!(out.chars().count(), 8);
     }
 }
